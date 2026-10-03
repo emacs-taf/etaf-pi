@@ -80,7 +80,12 @@
     (etaf-pi-state-accept state '(:type "agent_end" :willRetry t))
     (should (equal (plist-get (etaf-pi-state-info state) :phase) "回复中"))
     (etaf-pi-state-accept state '(:type "agent_settled"))
-    (should (equal (plist-get (etaf-pi-state-info state) :phase) "就绪"))))
+    (should (equal (plist-get (etaf-pi-state-info state) :phase) "就绪"))
+    (etaf-pi-state-accept state '(:type "agent_start"))
+    (etaf-pi-state-accept state '(:type "message_end" :message (:role "assistant" :stopReason "aborted" :content nil)))
+    (etaf-pi-state-accept state '(:type "agent_settled"))
+    (should-not (plist-get (etaf-pi-state-info state) :error))
+    (should (equal (plist-get (etaf-pi-state-info state) :notice) "已停止"))))
 
 (ert-deftest etaf-pi-test-dialog-and-shutdown ()
   "Dialog replies match ids, false stays false, shutdown is idempotent."
@@ -174,6 +179,51 @@
         (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
         (when (buffer-live-p editor)
           (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+
+(ert-deftest etaf-pi-test-chat-keys-and-session-switch-guard ()
+  "Enter sends, Shift+Enter adds a line, and a pending session switch blocks sends."
+  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq owner (etaf-pi-open temporary-file-directory t))
+            (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+            (etaf-pi-edit) (setq editor (current-buffer))
+            (insert "第一行") (execute-kbd-macro (kbd "<S-return>")) (insert "第二行")
+            (should (equal (buffer-string) "第一行\n第二行"))
+            (execute-kbd-macro (kbd "RET"))
+            (etaf-pi-test--wait (lambda () (= (buffer-size editor) 0)))
+            (with-current-buffer owner
+              (etaf-pi-test--wait (lambda () (let ((info (etaf-pi-info)))
+                                             (and (equal (plist-get info :phase) "就绪")
+                                                  (not (plist-get info :render-pending))))))
+              (etaf-pi-new-session)
+              (should (plist-get (etaf-pi-info) :session-changing))
+              (should-error (etaf-pi-send "切换时不发送") :type 'user-error)
+              (etaf-pi-test--wait (lambda () (not (plist-get (etaf-pi-info) :session-changing))))))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
+        (when (buffer-live-p editor)
+          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+
+(ert-deftest etaf-pi-test-reopen-and-switch-owned-panes ()
+  "Reopening from input reuses the client; another client does not nest panes."
+  (let ((etaf-pi-command etaf-pi-test--command) first second count)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq first (etaf-pi-open temporary-file-directory))
+            (setq count (length (window-list)))
+            (etaf-pi-edit)
+            (should (eq first (etaf-pi-open temporary-file-directory)))
+            (should (= count (length (window-list))))
+            (setq second (etaf-pi-open temporary-file-directory t))
+            (should (= count (length (window-list))))
+            (should-not (get-buffer-window first t))
+            (should (eq first (etaf-pi-open temporary-file-directory)))
+            (should (= count (length (window-list))))
+            (should-not (get-buffer-window second t)))
+        (dolist (buffer (list first second))
+          (when (buffer-live-p buffer) (with-current-buffer buffer (etaf-pi-close))))))))
 
 (provide 'etaf-pi-tests)
 ;;; etaf-pi-tests.el ends here

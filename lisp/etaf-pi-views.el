@@ -1,8 +1,8 @@
-;;; etaf-pi-views.el --- Conversation surfaces and shared controls -*- lexical-binding: t; -*-
+;;; etaf-pi-views.el --- Chat, navigation and compact composer views -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; Commentary:
-;; Pure, bounded views. A retained transcript Host avoids rebuilding chrome.
-;; Native Emacs owns the adjacent editor; ETAF never imitates an editable area.
+;; Pure catalog composition. The message stream owns one retained content Host;
+;; native editing sits above a separate two-row ETAF action bar.
 ;;; Code:
 (require 'cl-lib)
 (require 'etaf)
@@ -14,8 +14,7 @@
   (let (lines)
     (dolist (line (split-string (replace-regexp-in-string "\t" "    " text t t) "\n" nil))
       (while (> (string-width line) width)
-        (let* ((piece (truncate-string-to-width line width))
-               (count (max 1 (length piece))))
+        (let* ((piece (truncate-string-to-width line width)) (count (max 1 (length piece))))
           (push (substring line 0 count) lines)
           (setq line (substring line count))))
       (push line lines))
@@ -29,13 +28,12 @@
                       (when bold (list :weight 'bold)))))
 
 (defun etaf-pi--surface-line (text width color background &optional bold)
-  "Fit a padded TEXT line to WIDTH with semantic COLOR and BACKGROUND."
+  "Pad TEXT to WIDTH using semantic COLOR and BACKGROUND."
   (etaf-pi--ink (concat "  " text (make-string (max 0 (- width 2 (string-width text))) ?\s))
                 color background bold))
 
 (defun etaf-pi--markdown-lines (text width)
-  "Render readable Markdown TEXT at WIDTH, keeping code verbatim.
-This intentionally supports headings, emphasis and fenced code, not HTML."
+  "Render headings, emphasis, inline code and fenced code from TEXT at WIDTH."
   (let (code result)
     (dolist (line (split-string text "\n" nil))
       (cond
@@ -68,76 +66,116 @@ This intentionally supports headings, emphasis and fenced code, not HTML."
          (pending (equal (plist-get message :stopReason) "pending")))
     (pcase role
       ("user"
-       (append (list (etaf-pi--surface-line "你" width :accent :accent-soft t))
-               (mapcar (lambda (line) (etaf-pi--surface-line line width :ink :accent-soft))
-                       (etaf-pi--wrap text (- width 4))) (list "")))
+       (let* ((bubble (min (- width 2) (max 20 (min (floor (* width .82)) (+ 4 (string-width text))))))
+              (inset (make-string (- width bubble) ?\s)))
+         (append (list "")
+                 (mapcar (lambda (line)
+                           (concat inset (etaf-pi--surface-line line bubble :ink :accent-soft)))
+                         (etaf-pi--wrap text (- bubble 4))) (list "" ""))))
       ("assistant"
        (unless (and (not pending) (string-empty-p (string-trim text)))
-         (append (list (etaf-pi--ink (if pending "PI  /  正在回复" "PI  /  助手") :accent nil t) "")
-               (if (string-empty-p (string-trim text))
-                   (list (etaf-pi--ink (if pending "正在思考…" "已发起工具调用") :muted))
-                 (etaf-pi--markdown-lines text width)) (list "" ""))))
+         (append (list (etaf-pi--ink (if pending "Pi · 正在回复" "Pi") :accent nil t) "")
+                 (if (string-empty-p (string-trim text)) (list (etaf-pi--ink "正在思考…" :muted))
+                   (etaf-pi--markdown-lines text width)) (list "" ""))))
       ("toolResult"
-       (let ((failed (eq (plist-get message :isError) t)))
-         (list (etaf-pi--surface-line
-                (truncate-string-to-width
-                 (format "工具 · %s · %s" (plist-get message :toolName) (if failed "失败" "完成")) (- width 4))
-                width (if failed :error :muted) :surface)
-               (etaf-pi--surface-line
-                (truncate-string-to-width (or (car (split-string text "\n")) "") (- width 4) nil nil "…")
-                width :muted :surface) "")))
+       (list (etaf-pi--ink
+              (truncate-string-to-width
+               (format "工具 · %s · %s" (plist-get message :toolName)
+                       (if (eq (plist-get message :isError) t) "失败" "完成")) width)
+              (if (eq (plist-get message :isError) t) :error :muted))
+             (etaf-pi--ink (truncate-string-to-width
+                            (concat "  " (or (car (split-string text "\n")) "")) width nil nil "…") :muted) ""))
       ((or "compactionSummary" "branchSummary")
        (append (list (etaf-pi--ink "上下文摘要" :muted))
                (etaf-pi--wrap (or (plist-get message :summary) "") width) (list "")))
       ("custom" (unless (eq (plist-get message :display) :false)
                   (append (etaf-pi--wrap text width) (list "")))))))
 
-(defun etaf-pi--control (label ref action &optional primary)
-  "Compose shared button LABEL at REF with ACTION."
+(defun etaf-pi--control (label ref action &optional primary disabled)
+  "Compose a catalog button LABEL at REF."
   (etaf-node 'etaf-button
-             (list :label label :id ref :ref ref :on-press action
+             (list :label label :id ref :ref ref :on-press action :disabled disabled
                    :variant (if primary 'primary 'ghost)
                    :color (etaf-pi-color (if primary :button-ink :muted))
                    :bgcolor (etaf-pi-color (if primary :accent :surface))
                    :padding '((lh 0) (ch 1)) :font-weight 'normal)
              nil))
 
-(defun etaf-pi--shell-view (title status lines width measure footer actions)
-  "Render TITLE, STATUS, LINES and ACTIONS within WIDTH, using MEASURE cells.
-FOOTER carries live status; fixed one-row slots prevent accidental line growth."
-  (etaf-view
-   (column :width 'stretch :background-color (etaf-pi-color :bg)
-     (box :height '(lh 1) :background-color (etaf-pi-color :surface) "")
-     (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
-           :padding '((lh 0) (ch 2)) :background-color (etaf-pi-color :surface)
-       (box :flex-basis '(ch 0) :flex-grow 1 :height '(lh 1) :wrap-mode 'none :overflow 'hidden
-         (text :font-weight 'bold :color (etaf-pi-color :ink)
-           (expr (concat "PI   /   " (truncate-string-to-width title (max 6 (- width 40)) nil nil "…")))))
-       (expr (etaf-pi--control "新会话" 'pi-new (plist-get actions :new)))
-       (expr (when (>= width 76) (etaf-pi--control "恢复" 'pi-resume (plist-get actions :resume))))
-       (expr (when (>= width 54) (etaf-pi--control "工具" 'pi-tools (plist-get actions :tools))))
-       (expr (etaf-pi--control "帮助" 'pi-help (plist-get actions :help))))
-     (box :height '(lh 1) :width 'stretch :wrap-mode 'none :overflow 'hidden
-          :padding '((lh 0) (ch 2)) :background-color (etaf-pi-color :surface)
-       (text :ref 'etaf-pi-status :id 'etaf-pi-status :color (etaf-pi-color :muted) (expr status)))
-     (box :height '(lh 1) "")
-     (flex :flex-direction 'row :width 'stretch :justify-content 'center
-       (box :width (list 'ch (+ measure 2)) :wrap-mode 'none :overflow 'hidden
+(defun etaf-pi--layout (width height)
+  "Resolve conversation geometry; native panes own navigation and input."
+  (list :width width :height height :left 0 :right 0 :center (- width 2)
+        :measure (min 92 (max 16 (- width 8)))))
+
+(defun etaf-pi--shell-view (title status lines layout navigation actions)
+  "Compose a quiet conversation header and its retained message stream."
+  (let* ((width (plist-get layout :width)) (height (plist-get layout :height))
+         (measure (plist-get layout :measure)) (left (/ (- width 2 measure) 2)))
+    (etaf-view
+     (box :position 'relative :width 'stretch :height (list 'lh height) :background-color (etaf-pi-color :bg)
+       (column :position 'absolute :z-index 0 :left '(ch 2) :top '(lh 1)
+               :width (list 'ch (- width 6)) :height '(lh 2)
+         (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
+           (box :flex-grow 1 :flex-basis '(ch 0) :height '(lh 1) :wrap-mode 'none :overflow 'hidden
+             (text :color (etaf-pi-color :ink) :font-weight 'bold
+               (expr (truncate-string-to-width title (max 8 (- width 32)) nil nil "…"))))
+           (expr (unless navigation (etaf-pi--control "新对话" 'pi-new (plist-get actions :new))))
+           (expr (etaf-pi--control "工具" 'pi-tools (plist-get actions :tools)))
+           (expr (unless navigation (etaf-pi--control "历史" 'pi-resume (plist-get actions :resume)))))
+         (box :width 'stretch :height '(lh 1) :wrap-mode 'none
+           (text :ref 'etaf-pi-status :id 'etaf-pi-status :color (etaf-pi-color :muted) (expr status))))
+       (box :position 'absolute :z-index 0 :left (list 'ch left) :top '(lh 4)
+            :width (list 'ch (+ measure 1)) :height (list 'lh (length lines))
+            :background-color (etaf-pi-color :bg) :wrap-mode 'none :overflow 'hidden
          (text :id 'etaf-pi-transcript :ref 'etaf-pi-transcript :color (etaf-pi-color :ink)
-           (expr (mapconcat (lambda (line) (if (string-empty-p line) " " line)) lines "\n")))))
-     (box :height '(lh 1) "")
-     (box :height '(lh 1) :width 'stretch :wrap-mode 'none :overflow 'hidden
-          :padding '((lh 0) (ch 2)) :background-color (etaf-pi-color :surface)
-       (text :ref 'etaf-pi-footer :id 'etaf-pi-footer :color (etaf-pi-color :muted) (expr footer)))
-     (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
-           :padding '((lh 0) (ch 2)) :background-color (etaf-pi-color :surface)
-       (expr (etaf-pi--control "发送" 'pi-compose (plist-get actions :compose) t))
-       (expr (etaf-pi--control "确认" 'pi-answer (plist-get actions :answer)))
-       (expr (etaf-pi--control "停止" 'pi-abort (plist-get actions :abort)))
-       (expr (when (>= width 54) (etaf-pi--control "模型" 'pi-model (plist-get actions :model))))
-       (expr (when (>= width 76) (etaf-pi--control "思考" 'pi-thinking (plist-get actions :thinking))))
-       (expr (when (>= width 100) (etaf-pi--control "最新" 'pi-follow (plist-get actions :follow)))))
-     (box :height '(lh 1) :background-color (etaf-pi-color :surface) ""))))
+           (expr (mapconcat (lambda (line) (if (string-empty-p line) " " line)) lines "\n"))))))))
+
+(defun etaf-pi--sidebar-view (title height actions)
+  "Render full-height conversation navigation, without dashboard cards."
+  (etaf-view
+   (box :position 'relative :width 'stretch :height (list 'lh height) :background-color (etaf-pi-color :surface)
+     (column :position 'absolute :z-index 0 :left '(ch 2) :top '(lh 1) :width '(ch 17)
+       (text :color (etaf-pi-color :ink) :font-weight 'bold "Pi")
+       (box :height '(lh 2) "")
+       (expr (etaf-pi--control "新对话" 'pi-new (plist-get actions :new)))
+       (box :height '(lh 1) "")
+       (expr (etaf-pi--control "历史会话" 'pi-resume (plist-get actions :resume)))
+       (box :height '(lh 2) "")
+       (text :color (etaf-pi-color :muted) "当前对话")
+       (box :height '(lh 1) "")
+       (etaf-button :aria-label title :ref 'pi-follow :id 'pi-follow :on-press (plist-get actions :follow)
+                    :variant 'secondary :padding '((lh 0) (ch 1))
+                    :color (etaf-pi-color :accent) :bgcolor (etaf-pi-color :accent-soft)
+         (box :width '(ch 14) :height '(lh 1) :wrap-mode 'none
+           (text (expr (truncate-string-to-width title 14 nil nil "…"))))))
+     (box :position 'absolute :z-index 0 :left '(ch 2) :top (list 'lh (- height 3)) :width '(ch 17)
+       (expr (etaf-pi--control "帮助" 'pi-help (plist-get actions :help)))))))
+
+(defun etaf-pi--composer-view (model thinking busy pending sending width actions)
+  "Render selectors below native input, with send/stop on the trailing edge."
+  (etaf-view
+   (box :position 'relative :width 'stretch :height '(lh 2) :background-color (etaf-pi-color :surface)
+     (flex :position 'absolute :z-index 0 :left '(ch 1) :top '(lh 0)
+           :width (list 'ch (- width 4)) :height '(lh 2) :flex-direction 'row :align-items 'center
+           :gap '((lh 0) (ch 1))
+       (etaf-button :ref 'pi-model :id 'pi-model :on-press (plist-get actions :model)
+                    :disabled (or busy sending) :variant 'ghost :color (etaf-pi-color :muted)
+                    :bgcolor (etaf-pi-color :surface) :font-weight 'normal
+         (flex :flex-direction 'row :gap '((lh 0) (ch 1))
+           (text (expr (truncate-string-to-width model (if (< width 70) 16 22) nil nil "…")))
+           (etaf-ui-icon :name 'chevron-down :set 'svg :color (etaf-pi-color :muted))))
+       (expr (when (>= width 74)
+               (etaf-pi--control (concat "思考 " (or (cdr (assoc thinking '(("off" . "标准") ("high" . "深入") ("max" . "最高")))) thinking))
+                                'pi-thinking (plist-get actions :thinking) nil (or busy sending))))
+       (expr (when (> pending 0)
+               (etaf-pi--control "待确认" 'pi-answer (plist-get actions :answer))))
+       (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
+       (expr (when busy (etaf-pi--control "停止" 'pi-abort (plist-get actions :abort))))
+       (etaf-button :ref 'pi-compose :id 'pi-compose :on-press (plist-get actions :compose)
+                    :disabled sending :aria-label "发送消息" :help-echo "Enter 发送 · Shift+Enter 换行"
+                    :padding '((lh 0) (ch 1)) :font-weight 'normal
+                    :bgcolor (etaf-pi-color :accent) :color (etaf-pi-color :button-ink)
+         (etaf-ui-icon :name (if sending 'loading 'chevron-up) :set 'svg :lines 2 :min-width 3
+                       :color (etaf-pi-color :button-ink)))))))
 
 (provide 'etaf-pi-views)
 ;;; etaf-pi-views.el ends here

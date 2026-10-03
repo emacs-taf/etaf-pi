@@ -21,9 +21,19 @@
   "Invoke KEY and enter TEXT through the actual minibuffer command loop."
   (execute-kbd-macro (vconcat (kbd key) (string-to-vector text) (kbd "RET"))))
 
+(defun etaf-pi-gui--focus (ref)
+  "Focus REF in its visible application pane."
+  (let* ((info (with-current-buffer etaf-pi-gui--buffer (etaf-pi-info)))
+         (pane (cond ((memq ref '(pi-compose pi-model pi-thinking pi-abort pi-answer))
+                      (plist-get info :composer-bar))
+                     ((memq ref '(pi-new pi-resume pi-follow pi-help)) (plist-get info :navigation))))
+         (buffer (or (and pane (get-buffer pane)) etaf-pi-gui--buffer)))
+    (select-window (get-buffer-window buffer t))
+    (etaf-focus (etaf-runtime-for-buffer buffer) ref)))
+
 (defun etaf-pi-gui--press (ref)
   "Activate shared control REF using ETAF focus plus RET."
-  (etaf-focus (etaf-runtime-for-buffer (current-buffer)) ref)
+  (etaf-pi-gui--focus ref)
   (execute-kbd-macro (kbd "RET")))
 
 (defun etaf-pi-gui--idle (_)
@@ -36,11 +46,16 @@
   (let* ((window (get-buffer-window etaf-pi-gui--buffer))
          (size (and window (window-text-pixel-size window))))
     (and window
+         (equal (plist-get (etaf-pi-info) :phase) (plist-get (etaf-pi-info) :controls-phase))
+         (or (not (equal (plist-get (etaf-pi-info) :phase) "就绪"))
+             (not (plist-get (etaf-pi-info) :render-pending)))
          (equal (plist-get (etaf-pi-info) :viewport)
                 (list (window-body-width window) (window-body-height window)))
          (etaf-gui-verifier-canvas-filled-p etaf-pi-gui--buffer)
          (<= (car size) (window-body-width window t))
-         (= (window-hscroll window) 0))))
+         (= (window-hscroll window) 0)
+         (cl-every (lambda (name) (or (not name) (etaf-gui-verifier-canvas-filled-p (get-buffer name))))
+                   (list (plist-get (etaf-pi-info) :navigation) (plist-get (etaf-pi-info) :composer-bar))))))
 
 (defun etaf-pi-gui--action (id execute &optional ready screenshot)
   "Build action ID with EXECUTE and observable READY, optionally SCREENSHOT."
@@ -68,7 +83,22 @@
    (lambda (_)
      (with-current-buffer etaf-pi-gui--buffer
        (append (list (etaf-gui-verifier-assert "no backend/render error" (not (plist-get (etaf-pi-info) :error)))
-                     (etaf-gui-verifier-assert "canvas fits window" (etaf-pi-gui--geometry)))
+                     (etaf-gui-verifier-assert "canvas fits window" (etaf-pi-gui--geometry))
+                     (etaf-gui-verifier-assert
+                      "input and selectors share the conversation column"
+                      (let* ((info (etaf-pi-info)) (editor (plist-get info :composer))
+                             (input (and editor (get-buffer-window (plist-get editor :buffer) t)))
+                             (bar (and (plist-get info :composer-bar) (get-buffer-window (plist-get info :composer-bar) t)))
+                             (main (get-buffer-window etaf-pi-gui--buffer t)))
+                        (or (not input)
+                            (and (equal (window-margins input) '(2 . 2))
+                                 (= (car (window-edges main)) (car (window-edges input)))
+                                 (or (not bar) (= (car (window-edges main)) (car (window-edges bar))))))))
+                     (etaf-gui-verifier-assert
+                      "sidebar remains full height"
+                      (let* ((name (plist-get (etaf-pi-info) :navigation))
+                             (nav (and name (get-buffer-window name t))))
+                        (or (not nav) (= (window-total-height nav) (1- (frame-height)))))))
                (etaf-gui-verifier-line-height-assertions etaf-pi-gui--buffer)))))))
 
 (defun etaf-pi-gui-run (directory)
@@ -82,7 +112,7 @@
            :initialize
            (lambda (context)
              (select-frame frame) (delete-frame original-frame t)
-             (set-frame-size frame 130 44)
+             (set-frame-size frame 156 48)
              (setq etaf-pi-gui--buffer (etaf-pi-open etaf-pi-gui--root t))
              (setf (etaf-gui-verifier-context-target-buffer context) etaf-pi-gui--buffer))
            :actions
@@ -118,10 +148,10 @@
               (lambda (_) (and (etaf-pi-gui--idle nil)
                                 (= (plist-get (plist-get (etaf-pi-info) :composer) :characters) 0))))
              (etaf-pi-gui--action
-              "model" (lambda (_) (etaf-focus (etaf-runtime-for-buffer (current-buffer)) 'pi-model)
+              "model" (lambda (_) (etaf-pi-gui--focus 'pi-model)
                          (etaf-pi-gui--type "RET" "fixture/offline")) #'etaf-pi-gui--idle)
              (etaf-pi-gui--action
-              "thinking" (lambda (_) (etaf-focus (etaf-runtime-for-buffer (current-buffer)) 'pi-thinking)
+              "thinking" (lambda (_) (etaf-pi-gui--focus 'pi-thinking)
                             (etaf-pi-gui--type "RET" "high"))
               (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :thinkingLevel) "high")))
              (etaf-pi-gui--action
@@ -129,7 +159,7 @@
               (lambda (_) (plist-get (etaf-pi-info) :dialogs)) t)
              (etaf-pi-gui--action
               "dialog-decline" (lambda (_)
-                                 (etaf-focus (etaf-runtime-for-buffer (current-buffer)) 'pi-answer)
+                                 (etaf-pi-gui--focus 'pi-answer)
                                  (if (or (eq (indirect-function 'yes-or-no-p) (indirect-function 'y-or-n-p))
                                          (bound-and-true-p use-short-answers))
                                      (execute-kbd-macro (kbd "RET n"))
@@ -141,10 +171,24 @@
                                (unless (string-match-p "第一行" (buffer-substring-no-properties (point-min) (point-max)))
                                  (error "Full tool output missing"))
                                (execute-kbd-macro (kbd "q"))))
-             (etaf-pi-gui--action "history-wheel" (lambda (_) (execute-kbd-macro [wheel-up]))
+             (etaf-pi-gui--action "history-wheel" (lambda (_)
+                                                   (let ((main (get-buffer-window etaf-pi-gui--buffer)))
+                                                     (execute-kbd-macro (kbd "i"))
+                                                     (let ((input (selected-window)))
+                                                       (execute-kbd-macro
+                                                        (vector (list 'wheel-up (posn-at-point (window-start main) main) 1)))
+                                                       (unless (eq input (selected-window))
+                                                         (error "Wheel stole input focus")))))
                                   (lambda (_) (not (plist-get (etaf-pi-info) :following))) t)
              (etaf-pi-gui--action "follow-button" (lambda (_) (etaf-pi-gui--press 'pi-follow))
                                   (lambda (_) (plist-get (etaf-pi-info) :following)))
+             (etaf-pi-gui--action
+              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (insert "持续任务")
+                                          (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (let ((bar (plist-get (etaf-pi-info) :composer-bar)))
+                  (and (equal (plist-get (etaf-pi-info) :phase) "回复中") bar
+                       (with-current-buffer bar (string-match-p "停止" (buffer-substring-no-properties (point-min) (point-max))))))))
              (etaf-pi-gui--action "stop-button" (lambda (_) (etaf-pi-gui--press 'pi-abort)) #'etaf-pi-gui--idle))
             (mapcar
              (lambda (size)
@@ -152,7 +196,7 @@
                 (format "layout-%dx%d" (car size) (cadr size))
                 (lambda (_) (set-frame-size frame (car size) (cadr size)))
                 (lambda (_) (and (= (frame-width frame) (car size)) (= (frame-height frame) (cadr size)))) t))
-             '((150 44) (100 40) (58 36) (85 22)))
+             '((150 44) (100 40) (58 36) (85 22) (156 48)))
             (list
              (etaf-pi-gui--action "new-session" (lambda (_) (etaf-pi-gui--press 'pi-new))
                                   (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/pi-new.jsonl")))

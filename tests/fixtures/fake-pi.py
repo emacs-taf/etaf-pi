@@ -11,6 +11,7 @@ messages = []
 model = {'id': 'offline', 'provider': 'fixture', 'contextWindow': 1000000}
 level = 'off'
 active = False
+generation = 0
 aborted = threading.Event()
 session = '/tmp/pi-fixture.jsonl'
 queued = []
@@ -36,15 +37,17 @@ def response(request, data=None, success=True, error=None):
 
 
 def stream(request):
-    global active
+    global active, generation
+    generation += 1
+    own_generation = generation
     active = True
     aborted.clear()
     if request['message'] == '延迟接收':
         time.sleep(.2)
     response(request)
     for record in fixture:
-        if aborted.is_set():
-            break
+        if aborted.is_set() or generation != own_generation:
+            return
         if record['type'] in ('response', 'agent_settled', 'agent_end'):
             continue
         if record['type'] in ('message_start', 'message_end'):
@@ -58,13 +61,15 @@ def stream(request):
                         '我会先检查项目结构，再把改动拆成可以验证的小步。'
                         '你可以随时补充要求，不必等这轮结束。\n\n'
                         '**输入始终在手边**\n'
-                        '- 回车换行，发送后继续编辑下一条。\n'
+                        '- Enter 发送，Shift+Enter 换行。\n'
                         '- 失败不会清空草稿，确认不会自动放行。\n\n'
                         '```elisp\n(etaf-pi-open)\n;; 从当前项目开始一段对话\n```\n\n'
                         '检查结果保留在工具面板中，可随时查看完整输出。'))]
                 messages.append(record['message'])
         emit(record)
-        time.sleep(.006)
+        time.sleep(.08 if request['message'] == '持续任务' else .006)
+    if aborted.is_set() or generation != own_generation:
+        return
     tool = dict(role='toolResult', toolCallId='call-fixture', toolName='read',
                 content=[dict(type='text', text='fixture.txt\n第一行\nsecond\u2028third')], isError=False)
     emit(dict(type='tool_execution_start', toolCallId='call-fixture', toolName='read', args={'path': 'fixture.txt'}))
@@ -87,7 +92,9 @@ for line in sys.stdin.buffer:
     elif kind == 'get_messages':
         response(request, dict(messages=messages))
     elif kind == 'get_session_stats':
-        response(request, dict(cost=0.0001, contextUsage=dict(tokens=300, contextWindow=1000000, percent=.03)))
+        tokens = 300 + len(messages) * 10000
+        response(request, dict(cost=0.0001 * max(1, len(messages)),
+                               contextUsage=dict(tokens=tokens, contextWindow=1000000, percent=tokens / 10000)))
     elif kind == 'get_available_models':
         response(request, dict(models=[model]))
     elif kind == 'get_available_thinking_levels':
@@ -111,6 +118,7 @@ for line in sys.stdin.buffer:
         queued.clear()
         emit(dict(type='queue_update', steering=[], followUp=[]))
     elif kind == 'abort':
+        generation += 1
         aborted.set()
         active = False
         response(request)

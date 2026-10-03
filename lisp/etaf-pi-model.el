@@ -57,7 +57,8 @@ Unknown records are ignored.  Failures remain visible in the state info."
               (setf (etaf-pi--state-messages state) nil (etaf-pi--state-partial state) nil
                     (etaf-pi--state-tools state) nil (etaf-pi--state-error state) nil)
               (clrhash (etaf-pi--state-blocks state))))))))
-    ("agent_start" (setf (etaf-pi--state-phase state) "回复中" (etaf-pi--state-error state) nil))
+    ("agent_start" (setf (etaf-pi--state-phase state) "回复中" (etaf-pi--state-error state) nil
+                         (etaf-pi--state-notice state) nil))
     ("agent_settled" (setf (etaf-pi--state-phase state) "就绪"))
     ("message_start"
      (when (equal (plist-get (plist-get record :message) :role) "assistant")
@@ -83,8 +84,9 @@ Unknown records are ignored.  Failures remain visible in the state info."
        (when (equal (plist-get message :role) "assistant")
          (setf (etaf-pi--state-partial state) nil)
          (clrhash (etaf-pi--state-blocks state))
-         (when (member (plist-get message :stopReason) '("error" "aborted"))
-           (setf (etaf-pi--state-error state) (or (plist-get message :errorMessage) "回复已中断"))))
+         (pcase (plist-get message :stopReason)
+           ("error" (setf (etaf-pi--state-error state) (or (plist-get message :errorMessage) "回复失败")))
+           ("aborted" (setf (etaf-pi--state-notice state) "已停止"))))
        (when (equal (plist-get message :role) "toolResult")
          (setf (etaf-pi--state-tools state)
                (cl-remove (plist-get message :toolCallId) (etaf-pi--state-tools state)

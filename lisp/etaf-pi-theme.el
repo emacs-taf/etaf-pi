@@ -29,5 +29,14 @@
   (or (alist-get key etaf-pi-palette)
       (if (eq (frame-parameter nil 'background-mode) 'dark) "#e6edf3" "#1f2328")))
 
+(defun etaf-pi--theme-tokens ()
+  "Supply the shared catalog with the workbench's semantic palette."
+  (list :ui-fg (etaf-pi-color :ink) :ui-bg (etaf-pi-color :bg)
+        :ui-muted (etaf-pi-color :muted) :ui-border (etaf-pi-color :border)
+        :ui-panel-fg (etaf-pi-color :ink) :ui-panel-bg (etaf-pi-color :surface)
+        :ui-panel-border (etaf-pi-color :border)
+        :ui-success-fg (etaf-pi-color :accent)
+        :ui-progress-track (etaf-pi-color :surface-2)))
+
 (provide 'etaf-pi-theme)
 ;;; etaf-pi-theme.el ends here

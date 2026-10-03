@@ -42,6 +42,9 @@
 ;; Function: etaf-pi-info ()
 ;; Return client facts and connection liveness without network I/O. :composer
 ;; describes the native draft buffer name, character count, visibility and sending state.
+;; :navigation and :composer-bar name visible chrome buffers. :session-changing
+;; gates sends during a switch; :render-pending and :controls-phase describe
+;; whether the visible controls have caught up with backend state.
 ;; Function: etaf-pi-send (text &optional behavior)
 ;; Send TEXT; while running, BEHAVIOR defaults to followUp (or use steer).
 ;; Function: etaf-pi-compose (text)

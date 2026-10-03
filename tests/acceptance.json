@@ -10,6 +10,8 @@
     {"name": "etaf-pi-test-dialog-and-shutdown", "file": "tests/etaf-pi-tests.el", "purpose": "Dialog ids and false responses survive transport; close is idempotent."},
     {"name": "etaf-pi-test-native-client-workflow", "file": "tests/etaf-pi-tests.el", "purpose": "The native client sends, switches settings, cancels dialogs, resumes and closes."},
     {"name": "etaf-pi-test-persistent-draft", "file": "tests/etaf-pi-tests.el", "purpose": "Native input remains open after send and preserves cancelled drafts."},
-    {"name": "etaf-pi-test-draft-failure-and-concurrent-edit", "file": "tests/etaf-pi-tests.el", "purpose": "Failed sends and edits made before acknowledgement retain their input."}
+    {"name": "etaf-pi-test-draft-failure-and-concurrent-edit", "file": "tests/etaf-pi-tests.el", "purpose": "Failed sends and edits made before acknowledgement retain their input."},
+    {"name": "etaf-pi-test-chat-keys-and-session-switch-guard", "file": "tests/etaf-pi-tests.el", "purpose": "Standard chat keys preserve multiline input and pending session changes reject sends."},
+    {"name": "etaf-pi-test-reopen-and-switch-owned-panes", "file": "tests/etaf-pi-tests.el", "purpose": "Reopening from input reuses panes and switching clients preserves the prior hidden session without nested layouts."}
   ]
 }

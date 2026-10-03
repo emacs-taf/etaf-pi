@@ -41,8 +41,10 @@ Changing adapter semantics requires updating this version and its tests.
 
 ## Rendering and input
 
-The application paints a bounded transcript Host, separate from its status and
-footer Hosts. Message text wraps at the available width (capped at 92 cells);
+The application paints a bounded transcript Host, separate from its status
+Host. Navigation and the two-row composer toolbar have independent ETAF
+runtimes in owned native windows, so input remains a real editable buffer
+and the sidebar keeps the full height of the conversation area. Message text wraps at the available width (capped at 92 cells);
 completed-message wrapping is cached per width. Semantic text faces distinguish
 user messages, replies, code and tool summaries without changing row metrics.
 Incoming deltas only set dirty state. A single 80 ms timer coalesces them into a
@@ -50,8 +52,10 @@ retained content batch. The transcript uses one Host rather than one per line to
 avoid repeated projection overhead. Nothing is scheduled while idle. Resize
 rebuilds layout, not conversation history. Scrolling stops auto-follow.
 
-Native minibuffer and text buffers own editing/IME/undo. A seven-row input pane
-splits only the client's own window; short windows use same-window editing.
+Native minibuffer and text buffers own editing/IME/undo. A six-row composer
+combines four native editor rows with a two-row ETAF toolbar below it. Enter
+sends, Shift+Enter inserts a newline, and an overlay supplies the empty prompt
+without modifying the draft. Short windows use same-window editing.
 Sending leaves the editor open and clears unchanged text only after acceptance.
 A failed request or an edit during the acknowledgement wait preserves text.
 Hiding the editor preserves its draft; closing the client retains nonempty draft

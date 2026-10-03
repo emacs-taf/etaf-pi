@@ -58,6 +58,12 @@
          (sleep-for .5))
        (etaf-pi-follow))
      (list :buffer buffer
+           :ready (lambda ()
+                    (with-current-buffer buffer
+                      (let ((info (etaf-pi-info)))
+                        (and (equal (plist-get info :phase) "就绪")
+                             (not (plist-get info :render-pending))
+                             (= (plist-get (plist-get info :connection) :pending) 0)))))
            :invoke (lambda (sample)
                      (with-current-buffer buffer
                        (if (= (% sample 2) 0) (etaf-pi-page-up) (etaf-pi-page-down))
