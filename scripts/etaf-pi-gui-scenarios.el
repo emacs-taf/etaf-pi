@@ -44,7 +44,8 @@
 
 (defun etaf-pi-gui--action (id execute &optional ready screenshot)
   "Build action ID with EXECUTE and observable READY, optionally SCREENSHOT."
-  (etaf-gui-verifier-action-create
+  (let (capture-ready-at)
+   (etaf-gui-verifier-action-create
    :id id :screenshot screenshot
    :execute (lambda (context)
               (etaf-pi-gui--main) (funcall execute context)
@@ -55,14 +56,20 @@
        (when (and (or (not ready) (funcall ready context)) (etaf-pi-gui--geometry))
          ;; NS can retain stale pixels on obscured, unfocused frames. Request a
          ;; redraw for capture only, never focus, and never count it as latency.
-         (when screenshot (redraw-display))
-         t)))
+         (cond
+          ((not screenshot) t)
+          ((not capture-ready-at)
+           (redraw-display)
+           ;; Emacs geometry precedes the NS backing-store resize. Yield for
+           ;; its redraw before window-scoped capture; not an input benchmark.
+           (setq capture-ready-at (+ (float-time) 1.0)) nil)
+          (t (>= (float-time) capture-ready-at))))))
    :assertions
    (lambda (_)
      (with-current-buffer etaf-pi-gui--buffer
        (append (list (etaf-gui-verifier-assert "no backend/render error" (not (plist-get (etaf-pi-info) :error)))
                      (etaf-gui-verifier-assert "canvas fits window" (etaf-pi-gui--geometry)))
-               (etaf-gui-verifier-line-height-assertions etaf-pi-gui--buffer))))))
+               (etaf-gui-verifier-line-height-assertions etaf-pi-gui--buffer)))))))
 
 (defun etaf-pi-gui-run (directory)
   "Run the offline product workflow and save evidence to DIRECTORY."
