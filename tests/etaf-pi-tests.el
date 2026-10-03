@@ -1,0 +1,179 @@
+;;; etaf-pi-tests.el --- Public client and protocol acceptance -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+;;; Commentary:
+;; Offline subprocess tests replay recorded wire events. No API keys or Pi needed.
+;;; Code:
+(require 'ert)
+(require 'etaf-pi)
+(require 'json)
+(defconst etaf-pi-test--command
+  (list "python3" (expand-file-name "fixtures/fake-pi.py"
+                                   (file-name-directory (or load-file-name buffer-file-name)))))
+(defun etaf-pi-test--wait (predicate &optional seconds)
+  "Wait bounded SECONDS for observable PREDICATE."
+  (let ((end (+ (float-time) (or seconds 5))))
+    (while (and (not (funcall predicate)) (< (float-time) end)) (sleep-for .02))
+    (should (funcall predicate))))
+
+(ert-deftest etaf-pi-test-stream-and-framing ()
+  "Fragmented UTF-8/CRLF records reconstruct and settle a real captured stream."
+  (let ((state (etaf-pi-state-create)) events response connection)
+    (unwind-protect
+        (progn
+          (setq connection (etaf-pi-rpc-start
+                            temporary-file-directory
+                            (lambda (event) (push event events) (etaf-pi-state-accept state event))
+                            etaf-pi-test--command))
+          (etaf-pi-rpc-request connection "prompt" '(:message "你好\u2028世界")
+                               (lambda (record) (setq response record)))
+          (etaf-pi-test--wait (lambda () (cl-find "agent_settled" events :key (lambda (e) (plist-get e :type)) :test #'equal)))
+          (should (eq (plist-get response :success) t))
+          (should (equal (plist-get (etaf-pi-state-info state) :phase) "就绪"))
+          (should (= (cl-count "assistant" (etaf-pi-state-messages state)
+                              :test #'equal :key (lambda (m) (plist-get m :role))) 1))
+          (should (equal (plist-get (cl-find "user" (etaf-pi-state-messages state)
+                                           :test #'equal :key (lambda (m) (plist-get m :role))) :content)
+                         "你好\u2028世界"))
+          (should-not (plist-get (etaf-pi-rpc-info connection) :error)))
+      (when connection (etaf-pi-rpc-close connection)))))
+
+(ert-deftest etaf-pi-test-correlation-and-timeout ()
+  "Replies correlate by id, with timeout rather than hanging or retrying."
+  (let ((connection (etaf-pi-rpc-start temporary-file-directory #'ignore etaf-pi-test--command)) a b timeout)
+    (unwind-protect
+        (progn
+          (etaf-pi-rpc-request connection "delay" '(:value "first") (lambda (r) (setq a r)))
+          (etaf-pi-rpc-request connection "echo" '(:value "second") (lambda (r) (setq b r)))
+          (etaf-pi-rpc-request connection "hang" nil (lambda (r) (setq timeout r)) .15)
+          (etaf-pi-test--wait (lambda () (and a b timeout)))
+          (should (equal (plist-get (plist-get a :data) :value) "first"))
+          (should (equal (plist-get (plist-get b :data) :value) "second"))
+          (should (eq (plist-get timeout :success) :false))
+          (should (= 0 (plist-get (etaf-pi-rpc-info connection) :pending))))
+      (etaf-pi-rpc-close connection))))
+
+(ert-deftest etaf-pi-test-failure-lifecycle ()
+  "Malformed output and process exit are observable; pending requests finish."
+  (dolist (command '("bad_json" "exit_now"))
+    (let (events result connection)
+      (unwind-protect
+          (progn
+            (setq connection (etaf-pi-rpc-start temporary-file-directory (lambda (e) (push e events)) etaf-pi-test--command))
+            (etaf-pi-rpc-request connection command nil (lambda (r) (setq result r)))
+            (etaf-pi-test--wait (lambda () (and result events)))
+            (should (eq (plist-get result :success) :false))
+            (should (plist-get (etaf-pi-rpc-info connection) :error)))
+        (when connection (etaf-pi-rpc-close connection))))))
+
+(ert-deftest etaf-pi-test-authoritative-end-and-retry ()
+  "Block indexes remain distinct; final messages replace deltas, only settled ends a run."
+  (let ((state (etaf-pi-state-create)))
+    (dolist (event '((:type "agent_start")
+                     (:type "message_start" :message (:role "assistant" :content nil))
+                     (:type "message_update" :assistantMessageEvent (:type "thinking_delta" :contentIndex 0 :delta "思考"))
+                     (:type "message_update" :assistantMessageEvent (:type "text_delta" :contentIndex 1 :delta "draft"))))
+      (etaf-pi-state-accept state event))
+    (should (= 2 (length (plist-get (car (etaf-pi-state-messages state)) :content))))
+    (etaf-pi-state-accept state '(:type "message_end" :message (:role "assistant" :content ((:type "text" :text "final")))))
+    (should (= 1 (length (etaf-pi-state-messages state))))
+    (should (equal (plist-get (car (plist-get (car (etaf-pi-state-messages state)) :content)) :text) "final"))
+    (etaf-pi-state-accept state '(:type "agent_end" :willRetry t))
+    (should (equal (plist-get (etaf-pi-state-info state) :phase) "回复中"))
+    (etaf-pi-state-accept state '(:type "agent_settled"))
+    (should (equal (plist-get (etaf-pi-state-info state) :phase) "就绪"))))
+
+(ert-deftest etaf-pi-test-dialog-and-shutdown ()
+  "Dialog replies match ids, false stays false, shutdown is idempotent."
+  (let (events connection)
+    (unwind-protect
+        (progn
+          (setq connection (etaf-pi-rpc-start temporary-file-directory (lambda (e) (push e events)) etaf-pi-test--command))
+          (etaf-pi-rpc-request connection "prompt" '(:message "/fixture-dialog"))
+          (etaf-pi-test--wait (lambda () events))
+          (let ((id (plist-get (car events) :id)))
+            (etaf-pi-rpc-respond connection id '(:confirmed :false)))
+          (etaf-pi-test--wait (lambda () (equal (plist-get (car events) :type) "notify_test")))
+          (should (eq (plist-get (plist-get (car events) :answer) :confirmed) :false))
+          (etaf-pi-rpc-close connection)
+          (etaf-pi-rpc-close connection)
+          (should-not (plist-get (etaf-pi-rpc-info connection) :alive))
+          (should-error (etaf-pi-rpc-request connection "get_state") :type 'user-error))
+      (when connection (etaf-pi-rpc-close connection)))))
+
+(ert-deftest etaf-pi-test-native-client-workflow ()
+  "Open, send, switch model, answer, resume and close through public APIs."
+  (let ((etaf-pi-command etaf-pi-test--command) buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (etaf-pi-open temporary-file-directory t))
+          (with-current-buffer buffer
+            (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+            (etaf-pi-send "你好")
+            (etaf-pi-test--wait (lambda () (and (equal (plist-get (etaf-pi-info) :phase) "就绪")
+                                               (string-match-p "工具 · read" (buffer-substring-no-properties (point-min) (point-max))))))
+            (etaf-pi-select-model "fixture/alternate")
+            (etaf-pi-test--wait (lambda () (equal (plist-get (plist-get (plist-get (etaf-pi-info) :session) :model) :id) "alternate")))
+            (etaf-pi-select-thinking "high")
+            (etaf-pi-test--wait (lambda () (equal (plist-get (plist-get (etaf-pi-info) :session) :thinkingLevel) "high")))
+            (etaf-pi-send "/fixture-dialog")
+            (etaf-pi-test--wait (lambda () (plist-get (etaf-pi-info) :dialogs)))
+            (etaf-pi-answer nil t)
+            (should-not (plist-get (etaf-pi-info) :dialogs))
+            (etaf-pi-resume "/tmp/cancelled.jsonl")
+            (sleep-for .15)
+            (should-not (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/cancelled.jsonl"))
+            (etaf-pi-new-session)
+            (etaf-pi-test--wait (lambda () (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/pi-new.jsonl")))
+            (should-error (etaf-pi-send "/settings") :type 'user-error)
+            (etaf-pi-close))
+          (should-not (buffer-live-p buffer)))
+      (when (buffer-live-p buffer) (with-current-buffer buffer (etaf-pi-close))))))
+
+(ert-deftest etaf-pi-test-persistent-draft ()
+  "Native input stays open; acknowledged text clears, cancelled drafts survive."
+  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq owner (etaf-pi-open temporary-file-directory t))
+            (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+            (etaf-pi-edit)
+            (setq editor (current-buffer))
+            (insert "多行消息\n第二行")
+            (etaf-pi-editor-send)
+            (should (eq (current-buffer) editor))
+            (etaf-pi-test--wait (lambda () (= (buffer-size editor) 0)))
+            (should (buffer-live-p editor))
+            (insert "未发送的草稿")
+            (etaf-pi-editor-cancel)
+            (should (eq (current-buffer) owner))
+            (etaf-pi-edit)
+            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "未发送的草稿")))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
+        (when (buffer-live-p editor)
+          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+
+(ert-deftest etaf-pi-test-draft-failure-and-concurrent-edit ()
+  "Failed sends and text edited before the ack are never discarded."
+  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq owner (etaf-pi-open temporary-file-directory t))
+            (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+            (etaf-pi-edit) (setq editor (current-buffer))
+            (insert "拒绝发送") (etaf-pi-editor-send)
+            (etaf-pi-test--wait (lambda () (with-current-buffer owner (plist-get (etaf-pi-info) :error))))
+            (should (equal (buffer-string) "拒绝发送"))
+            (should-not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))
+            (erase-buffer) (insert "延迟接收") (etaf-pi-editor-send)
+            (insert "\n继续编辑")
+            (etaf-pi-test--wait
+             (lambda () (not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))))
+            (should (equal (buffer-string) "延迟接收\n继续编辑")))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
+        (when (buffer-live-p editor)
+          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+
+(provide 'etaf-pi-tests)
+;;; etaf-pi-tests.el ends here

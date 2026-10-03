@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "load_path": [".", "lisp", "tests", "../etaf", "../etaf-ui", "../ebox", "../ecss", "../../etaf", "../../etaf-ui", "../../ebox", "../../ecss"],
+  "support": [],
+  "cases": [
+    {"name": "etaf-pi-test-stream-and-framing", "file": "tests/etaf-pi-tests.el", "purpose": "Fragmented UTF-8 and CRLF records reconstruct a captured real stream."},
+    {"name": "etaf-pi-test-correlation-and-timeout", "file": "tests/etaf-pi-tests.el", "purpose": "Out-of-order replies correlate and missing replies time out without retries."},
+    {"name": "etaf-pi-test-failure-lifecycle", "file": "tests/etaf-pi-tests.el", "purpose": "Malformed output and unexpected exit terminate pending requests visibly."},
+    {"name": "etaf-pi-test-authoritative-end-and-retry", "file": "tests/etaf-pi-tests.el", "purpose": "Final messages replace indexed deltas and retries do not settle prematurely."},
+    {"name": "etaf-pi-test-dialog-and-shutdown", "file": "tests/etaf-pi-tests.el", "purpose": "Dialog ids and false responses survive transport; close is idempotent."},
+    {"name": "etaf-pi-test-native-client-workflow", "file": "tests/etaf-pi-tests.el", "purpose": "The native client sends, switches settings, cancels dialogs, resumes and closes."},
+    {"name": "etaf-pi-test-persistent-draft", "file": "tests/etaf-pi-tests.el", "purpose": "Native input remains open after send and preserves cancelled drafts."},
+    {"name": "etaf-pi-test-draft-failure-and-concurrent-edit", "file": "tests/etaf-pi-tests.el", "purpose": "Failed sends and edits made before acknowledgement retain their input."}
+  ]
+}
