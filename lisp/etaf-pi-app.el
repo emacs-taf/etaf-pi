@@ -39,7 +39,6 @@
 (defvar-local etaf-pi--page-rows 20)
 (defvar-local etaf-pi--layout-facts nil)
 (defvar-local etaf-pi--actions nil)
-(defvar-local etaf-pi--placeholder nil)
 (defvar-local etaf-pi--session-changing nil)
 (defvar-local etaf-pi--controls-phase nil)
 (defvar-local etaf-pi--main-window nil)
@@ -261,15 +260,20 @@ Running prompts default to followUp, so typing never drops an instruction."
     (if (string-prefix-p "/" text)
         (etaf-pi--slash text)
       (setf (etaf-pi--state-draft etaf-pi--state) text)
-      (etaf-pi--request
-       "prompt" (list :message text :streamingBehavior (or behavior "followUp"))
-       (lambda (_)
-         (when (equal (etaf-pi--state-draft etaf-pi--state) text)
-           (setf (etaf-pi--state-draft etaf-pi--state) nil))
-         (when (buffer-live-p etaf-pi--composer)
-           (with-current-buffer etaf-pi--composer
-             (when (equal text (buffer-substring-no-properties (point-min) (point-max)))
-               (erase-buffer) (set-buffer-modified-p nil))))) 120))))
+      (let* ((editor (and (buffer-live-p etaf-pi--composer) etaf-pi--composer))
+             (tick (and editor (equal text (etaf-ui-editor-value editor))
+                        (with-current-buffer editor (buffer-chars-modified-tick)))))
+        (etaf-pi--request
+         "prompt" (list :message text :streamingBehavior (or behavior "followUp"))
+         (lambda (_)
+           (if editor
+               (when (and tick (eq editor etaf-pi--composer)
+                          (buffer-live-p editor)
+                          (etaf-ui-editor-replace editor "" tick))
+                 (with-current-buffer editor (set-buffer-modified-p nil))
+                 (setf (etaf-pi--state-draft etaf-pi--state) nil))
+             (when (equal (etaf-pi--state-draft etaf-pi--state) text)
+               (setf (etaf-pi--state-draft etaf-pi--state) nil)))) 120)))))
 
 (defun etaf-pi-compose (text)
   "Read and send TEXT through native minibuffer editing with command completion."
@@ -420,16 +424,13 @@ Interactively use native completion/confirmation. No unattended approval."
     (define-key map (kbd "C-<return>") #'etaf-pi-editor-send)
     (define-key map (kbd "M-TAB") #'completion-at-point) map))
 
-(defun etaf-pi--editor-changed (&rest _)
-  "Keep the unsent draft in its owner without republishing the transcript."
-  (when (overlayp etaf-pi--placeholder)
-    (overlay-put etaf-pi--placeholder 'after-string
-                 (when (= (buffer-size) 0)
-                   (propertize "发消息，或输入 / 选择命令" 'face (list :foreground (etaf-pi-color :muted)) 'cursor t))))
-  (when (and (not etaf-pi--editor-dialog) (buffer-live-p etaf-pi--editor-owner))
-    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-      (with-current-buffer etaf-pi--editor-owner
-        (when etaf-pi--state (setf (etaf-pi--state-draft etaf-pi--state) text))))))
+(defun etaf-pi--editor-changed (buffer)
+  "Keep BUFFER's unsent draft without republishing the transcript."
+  (with-current-buffer buffer
+    (when (and (not etaf-pi--editor-dialog) (buffer-live-p etaf-pi--editor-owner))
+      (let ((text (etaf-ui-editor-value buffer)))
+        (with-current-buffer etaf-pi--editor-owner
+          (when etaf-pi--state (setf (etaf-pi--state-draft etaf-pi--state) text)))))))
 
 (defun etaf-pi--complete-command ()
   "Offer Pi command completion at the beginning of the native draft."
@@ -446,14 +447,16 @@ Interactively use native completion/confirmation. No unattended approval."
   "Native multiline draft. Enter sends; Shift+Enter inserts a newline."
   (setq-local header-line-format " " mode-line-format nil)
   (face-remap-set-base 'header-line (list :background (etaf-pi-color :surface) :box nil))
-  (setq etaf-pi--placeholder (make-overlay (point-min) (point-min)))
-  (etaf-pi--editor-changed)
+  (etaf-ui-editor-mode 1)
+  (etaf-ui-editor-configure
+   :placeholder "发消息，或输入 / 选择命令"
+   :placeholder-face (list :foreground (etaf-pi-color :muted))
+   :on-change #'etaf-pi--editor-changed)
   (setq-local left-margin-width 2 right-margin-width 2 window-size-fixed 'height)
   (setq-local completion-at-point-functions '(etaf-pi--complete-command))
   (face-remap-set-base 'default (list :background (etaf-pi-color :surface) :foreground (etaf-pi-color :ink)))
   (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
   (visual-line-mode 1)
-  (add-hook 'after-change-functions #'etaf-pi--editor-changed nil t)
   (add-hook 'post-command-hook #'etaf-pi--editor-window-margins nil t)
   (add-hook 'window-configuration-change-hook #'etaf-pi--editor-window-margins nil t))
 

@@ -55,12 +55,16 @@ retained content batch. The transcript uses one Host rather than one per line to
 avoid repeated projection overhead. Nothing is scheduled while idle. Resize
 rebuilds layout, not conversation history. Scrolling stops auto-follow.
 
-Native minibuffer and text buffers own editing/IME/undo. A six-row composer
-combines four native editor rows with a two-row ETAF toolbar below it. Enter
-sends, Shift+Enter inserts a newline, and an overlay supplies the empty prompt
-without modifying the draft. Short windows use same-window editing.
-Sending leaves the editor open and clears unchanged text only after acceptance.
-A failed request or an edit during the acknowledgement wait preserves text.
+A six-row composer combines four native editor rows with a two-row ETAF toolbar
+below it. ETAF UI's shared native editing behavior owns the empty hint, edit
+observation and revision-guarded replacement; native Emacs owns editing, IME,
+selection, undo and completion. Pi owns the pane composition, command map,
+draft synchronization and send/acknowledgement policy. Enter sends and
+Shift+Enter inserts a newline. Short windows use same-window editing.
+Sending leaves the editor open. Acceptance clears text only when the original
+editor and its character modification tick still match the submitted draft.
+A failed request, replacement editor or any intervening edit preserves text,
+including editing and undoing back to the original string.
 Hiding the editor preserves its draft; closing the client retains nonempty draft
 buffers. No editable region is shared with ETAF's renderer. Asynchronous extension dialogs enter an explicit
 queue; pressing `a` opens native input. A supplied backend timeout is checked

@@ -3,6 +3,11 @@
   "load_path": [".", "lisp", "tests", "../etaf", "../etaf-ui", "../ebox", "../ecss", "../../etaf", "../../etaf-ui", "../../ebox", "../../ecss"],
   "support": [],
   "cases": [
+    {
+      "name": "etaf-pi-test-acknowledgement-preserves-edit-then-undo",
+      "file": "tests/etaf-pi-tests.el",
+      "purpose": "A delayed prompt acceptance preserves a draft edited and undone back to the original text instead of clearing it by string equality."
+    },
     {"name": "etaf-pi-test-stream-and-framing", "file": "tests/etaf-pi-tests.el", "purpose": "Fragmented UTF-8 and CRLF records reconstruct a captured real stream."},
     {"name": "etaf-pi-test-correlation-and-timeout", "file": "tests/etaf-pi-tests.el", "purpose": "Out-of-order replies correlate and missing replies time out without retries."},
     {"name": "etaf-pi-test-failure-lifecycle", "file": "tests/etaf-pi-tests.el", "purpose": "Malformed output and unexpected exit terminate pending requests visibly."},

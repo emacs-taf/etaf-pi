@@ -148,6 +148,24 @@
               (lambda (_) (and (etaf-pi-gui--idle nil)
                                 (= (plist-get (plist-get (etaf-pi-info) :composer) :characters) 0))))
              (etaf-pi-gui--action
+              "edited-draft-survives-ack"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (erase-buffer)
+                (execute-kbd-macro (string-to-vector "延迟接收"))
+                (undo-boundary)
+                (execute-kbd-macro (kbd "C-c C-c"))
+                (execute-kbd-macro (string-to-vector "新的输入"))
+                (undo-boundary)
+                (let ((last-command nil)) (call-interactively #'undo-only)))
+              (lambda (_)
+                (let* ((composer (plist-get (etaf-pi-info) :composer))
+                       (editor (get-buffer (plist-get composer :buffer))))
+                  (and (etaf-pi-gui--idle nil)
+                       (not (plist-get composer :sending))
+                       (buffer-live-p editor)
+                       (equal (etaf-ui-editor-value editor) "延迟接收")))) t)
+             (etaf-pi-gui--action
               "model" (lambda (_) (etaf-pi-gui--focus 'pi-model)
                          (etaf-pi-gui--type "RET" "fixture/offline")) #'etaf-pi-gui--idle)
              (etaf-pi-gui--action
@@ -155,7 +173,11 @@
                             (etaf-pi-gui--type "RET" "high"))
               (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :thinkingLevel) "high")))
              (etaf-pi-gui--action
-              "dialog-request" (lambda (_) (etaf-pi-gui--type ":" "/fixture-dialog"))
+              "dialog-request" (lambda (_)
+                                 (execute-kbd-macro (kbd "i"))
+                                 (erase-buffer)
+                                 (etaf-pi-gui--main)
+                                 (etaf-pi-gui--type ":" "/fixture-dialog"))
               (lambda (_) (plist-get (etaf-pi-info) :dialogs)) t)
              (etaf-pi-gui--action
               "dialog-decline" (lambda (_)
@@ -183,7 +205,7 @@
              (etaf-pi-gui--action "follow-button" (lambda (_) (etaf-pi-gui--press 'pi-follow))
                                   (lambda (_) (plist-get (etaf-pi-info) :following)))
              (etaf-pi-gui--action
-              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (insert "持续任务")
+              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (erase-buffer) (insert "持续任务")
                                           (execute-kbd-macro (kbd "RET")))
               (lambda (_)
                 (let ((bar (plist-get (etaf-pi-info) :composer-bar)))

@@ -181,6 +181,30 @@
         (when (buffer-live-p editor)
           (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
 
+(ert-deftest etaf-pi-test-acknowledgement-preserves-edit-then-undo ()
+  "A delayed acceptance must not clear a draft edited back to the same text."
+  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq owner (etaf-pi-open temporary-file-directory t))
+            (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+            (etaf-pi-edit) (setq editor (current-buffer))
+            (buffer-enable-undo)
+            (insert "延迟接收")
+            (undo-boundary)
+            (etaf-pi-editor-send)
+            (insert " changed")
+            (undo-boundary)
+            (let ((last-command nil)) (undo-only 1))
+            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "延迟接收"))
+            (etaf-pi-test--wait
+             (lambda () (not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))))
+            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "延迟接收")))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
+        (when (buffer-live-p editor)
+          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+
 (ert-deftest etaf-pi-test-chat-keys-and-session-switch-guard ()
   "Enter sends, Shift+Enter adds a line, and a pending session switch blocks sends."
   (let ((etaf-pi-command etaf-pi-test--command) owner editor)
