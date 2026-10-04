@@ -12,7 +12,7 @@ ETAF UI are accessed through their public entries only.
 There is no application-owned domain database. User drafts are ephemeral Emacs
 buffers/strings. Pi saves the conversation using its normal JSONL store.
 
-## Transport contract (version 1)
+## Transport contract (version 2)
 
 Upstream references: the installed Pi package's `docs/rpc.md`,
 `docs/rpc-commands.md`, `docs/json.md`, `docs/message-types.md` and
@@ -22,6 +22,9 @@ Changing adapter semantics requires updating this version and its tests.
 - argv is executed without a shell; stdin/stdout use UTF-8 JSON records delimited
   only by LF, accepting CRLF. U+2028 and U+2029 inside strings are not separators.
 - Each command has a unique id. Responses are correlated by id, never position.
+  Synthetic failure replies include the original command name. All records pass
+  through one FIFO, including when callbacks yield and reenter the process filter.
+  Callback errors or quits do not drop remaining records.
   Unsolicited events use a separate callback. Stdout must stay protocol-only;
   stderr is diagnostic text, retained as a bounded 64 KiB tail.
 - Requests time out once without retrying writes. A timeout means outcome unknown,

@@ -49,6 +49,7 @@
           (should (equal (plist-get (plist-get a :data) :value) "first"))
           (should (equal (plist-get (plist-get b :data) :value) "second"))
           (should (eq (plist-get timeout :success) :false))
+          (should (equal (plist-get timeout :command) "hang"))
           (should (= 0 (plist-get (etaf-pi-rpc-info connection) :pending))))
       (etaf-pi-rpc-close connection))))
 
@@ -224,6 +225,28 @@
             (should-not (get-buffer-window second t)))
         (dolist (buffer (list first second))
           (when (buffer-live-p buffer) (with-current-buffer buffer (etaf-pi-close))))))))
+
+(ert-deftest etaf-pi-test-reentrant-listener-preserves-wire-order ()
+  "A listener yielding for subprocess output cannot overtake queued wire records."
+  (let (connection order)
+    (unwind-protect
+        (progn
+          (setq connection
+                (etaf-pi-rpc-start
+                 temporary-file-directory
+                 (lambda (event)
+                   (when (equal (plist-get event :type) "test_event")
+                     (setq order (append order (list (plist-get event :sequence))))
+                     (when (= (plist-get event :sequence) 1)
+                       (etaf-pi-rpc-request connection "echo" nil
+                                            (lambda (_) (setq order (append order '(echo)))))
+                       (let ((deadline (+ (float-time) .1)))
+                         (while (< (float-time) deadline) (accept-process-output nil .01))))))
+                 etaf-pi-test--command))
+          (etaf-pi-rpc-request connection "burst")
+          (etaf-pi-test--wait (lambda () (= (length order) 3)))
+          (should (equal order '(1 2 echo))))
+      (when connection (etaf-pi-rpc-close connection)))))
 
 (provide 'etaf-pi-tests)
 ;;; etaf-pi-tests.el ends here

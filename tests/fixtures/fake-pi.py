@@ -149,6 +149,11 @@ for line in sys.stdin.buffer:
             sys.stdout.flush()
     elif kind == 'exit_now':
         sys.exit(7)
+    elif kind == 'burst':
+        response(request)
+        with lock:
+            sys.stdout.buffer.write(b'{"type":"test_event","sequence":1}\n{"type":"test_event","sequence":2}\n')
+            sys.stdout.buffer.flush()
     elif kind == 'echo':
         response(request, request)
     elif kind == 'delay':

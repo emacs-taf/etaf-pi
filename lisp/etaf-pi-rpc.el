@@ -8,13 +8,13 @@
 (require 'subr-x)
 
 (cl-defstruct (etaf-pi--connection (:constructor etaf-pi--make-connection))
-  process stderr (tail "") (serial 0) pending listener closed failure)
+  process stderr (tail "") (serial 0) pending listener closed failure queue draining)
 
 (defun etaf-pi--deliver (callback value)
   "Deliver VALUE to CALLBACK without breaking transport consumption."
   (when callback
     (condition-case err (funcall callback value)
-      (error (message "ETAF Pi callback: %s" (error-message-string err))))))
+      ((error quit) (message "ETAF Pi callback: %s" (error-message-string err))))))
 
 (defun etaf-pi--emit (connection record)
   "Deliver RECORD to CONNECTION's listener."
@@ -51,14 +51,24 @@
           (progn
             (when (> (length (etaf-pi--connection-tail connection)) (* 16 1024 1024))
               (error "RPC record exceeds 16 MiB"))
-            (dolist (line (nreverse lines))
-              (unless (string-empty-p (string-trim line))
-                (let ((record (json-parse-string (string-trim-right line "\r")
-                                                 :object-type 'plist :array-type 'list
-                                                 :null-object nil :false-object :false)))
-                  (if (equal (plist-get record :type) "response")
-                      (etaf-pi--finish-request connection (plist-get record :id) record)
-                    (etaf-pi--emit connection record))))))
+            (setf (etaf-pi--connection-queue connection)
+                  (nconc (etaf-pi--connection-queue connection) (nreverse lines)))
+            ;; Consumers can yield and reenter this filter. Queue new records
+            ;; behind the current chunk instead of delivering them out of order.
+            (unless (etaf-pi--connection-draining connection)
+              (setf (etaf-pi--connection-draining connection) t)
+              (unwind-protect
+                  (while (and (etaf-pi--connection-queue connection)
+                              (not (etaf-pi--connection-closed connection)))
+                    (let ((line (pop (etaf-pi--connection-queue connection))))
+                      (unless (string-empty-p (string-trim line))
+                        (let ((record (json-parse-string (string-trim-right line "\r")
+                                                        :object-type 'plist :array-type 'list
+                                                        :null-object nil :false-object :false)))
+                          (if (equal (plist-get record :type) "response")
+                              (etaf-pi--finish-request connection (plist-get record :id) record)
+                            (etaf-pi--emit connection record))))))
+                (setf (etaf-pi--connection-draining connection) nil))))
         (error
          (setf (etaf-pi--connection-failure connection) (error-message-string err))
          (etaf-pi--emit connection (list :type "client_error" :error (error-message-string err)))
@@ -117,7 +127,12 @@ A timeout reports an unknown outcome, not rollback."
                     connection id (list :type "response" :id id :success :false
                                         :error "RPC 超时；结果未知，未自动重试")))))
          (record (append (list :id id :type type) fields)))
-    (puthash id (cons callback timer) (etaf-pi--connection-pending connection))
+    (puthash id (cons (lambda (reply)
+                        (when callback
+                          (funcall callback
+                                   (if (plist-member reply :command) reply
+                                     (plist-put reply :command type))))) timer)
+             (etaf-pi--connection-pending connection))
     (condition-case err
         (process-send-string (etaf-pi--connection-process connection)
                              (concat (json-serialize record :null-object nil :false-object :false) "\n"))
@@ -154,7 +169,8 @@ Use :false for JSON false.  This sends no ordinary RPC request."
 (defun etaf-pi-rpc-close (connection)
   "Close CONNECTION idempotently; EOF first, terminate this process after 2s."
   (unless (etaf-pi--connection-closed connection)
-    (setf (etaf-pi--connection-closed connection) t)
+    (setf (etaf-pi--connection-closed connection) t
+          (etaf-pi--connection-queue connection) nil)
     (etaf-pi--fail-pending connection "连接已关闭")
     (let ((process (etaf-pi--connection-process connection))
           (stderr (etaf-pi--connection-stderr connection)))
