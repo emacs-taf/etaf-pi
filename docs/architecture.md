@@ -45,9 +45,10 @@ Changing adapter semantics requires updating this version and its tests.
 ## Rendering and input
 
 The application paints a bounded transcript Host, separate from its status
-Host. Navigation and the two-row composer toolbar have independent ETAF
-runtimes in owned native windows, so input remains a real editable buffer
-and the sidebar keeps the full height of the conversation area. Message text wraps at the available width (capped at 92 cells);
+Host, and an in-layout composer. Navigation has its own ETAF runtime in an
+owned native window, so the sidebar keeps the full height of the conversation
+area; the conversation, the composer field and its control row share one
+Runtime. Message text wraps at the available width (capped at 92 cells);
 completed-message wrapping is cached per width. Semantic text faces distinguish
 user messages, replies, code and tool summaries without changing row metrics.
 Incoming deltas only set dirty state. A single 80 ms timer coalesces them into a
@@ -55,18 +56,20 @@ retained content batch. The transcript uses one Host rather than one per line to
 avoid repeated projection overhead. Nothing is scheduled while idle. Resize
 rebuilds layout, not conversation history. Scrolling stops auto-follow.
 
-A six-row composer combines four native editor rows with a two-row ETAF toolbar
-below it. ETAF UI's shared native editing behavior owns the empty hint, edit
-observation and revision-guarded replacement; native Emacs owns editing, IME,
-selection, undo and completion. Pi owns the pane composition, command map,
-draft synchronization and send/acknowledgement policy. Enter sends and
-Shift+Enter inserts a newline. Short windows use same-window editing.
-Sending leaves the editor open. Acceptance clears text only when the original
-editor and its character modification tick still match the submitted draft.
-A failed request, replacement editor or any intervening edit preserves text,
-including editing and undoing back to the original string.
-Hiding the editor preserves its draft; closing the client retains nonempty draft
-buffers. No editable region is shared with ETAF's renderer. Asynchronous extension dialogs enter an explicit
+The composer is ETAF UI's `etaf-text-input` inside that surface: activation
+opens a native session over the field's published text in the conversation
+buffer, so native Emacs owns editing, IME, point, selection, undo and
+completion, and no extra frame or editor buffer exists. The framework defers
+publication while the session owns the text and republishes the accepted value
+when it ends; per-keystroke edits reach the draft through the field's binding.
+Pi owns the command map, draft mirroring and send/acknowledgement policy. Enter
+sends, Shift+Return inserts a newline, and Escape/`C-c C-k` ends the session
+while keeping the accepted text as the draft. Acceptance clears the draft only
+when no session is active and the draft still equals the submitted text, so a
+failed request or any intervening edit preserves it. Because a session edits
+the surface's real text, the paint after it ends rebuilds the view instead of
+patching retained cohorts. No editable region is shared across runtimes.
+Asynchronous extension dialogs enter an explicit
 queue; pressing `a` opens native input. A supplied backend timeout is checked
 before answering. C-g sends cancellation, never confirmation.
 

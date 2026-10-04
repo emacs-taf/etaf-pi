@@ -32,13 +32,14 @@
 (defvar-local etaf-pi--offset 0)
 (defvar-local etaf-pi--total-lines 0)
 (defvar-local etaf-pi--disposed nil)
-(defvar-local etaf-pi--editor-owner nil)
-(defvar-local etaf-pi--editor-dialog nil)
-(defvar-local etaf-pi--composer nil)
-(defvar-local etaf-pi--editor-sending nil)
+(defvar-local etaf-pi--draft nil)
+(defvar-local etaf-pi--composer-dialog nil)
+(defvar-local etaf-pi--sending nil)
 (defvar-local etaf-pi--page-rows 20)
 (defvar-local etaf-pi--layout-facts nil)
 (defvar-local etaf-pi--actions nil)
+(defvar-local etaf-pi--session-editing nil)
+(defvar-local etaf-pi--controls-painted nil)
 (defvar-local etaf-pi--session-changing nil)
 (defvar-local etaf-pi--controls-phase nil)
 (defvar-local etaf-pi--main-window nil)
@@ -74,6 +75,8 @@
                    (numberp (plist-get record :timeout)))
           (setq record (plist-put record :deadline (+ (float-time) (/ (plist-get record :timeout) 1000.0)))))
         (etaf-pi-state-accept etaf-pi--state record)
+        (when (equal (plist-get record :type) "set_editor_text")
+          (etaf-pi--set-draft (or (etaf-pi--state-draft etaf-pi--state) "")))
         (etaf-pi--schedule-paint)
         (when (equal (plist-get record :type) "agent_settled")
           (etaf-pi-refresh))))))
@@ -94,11 +97,9 @@
              (when (equal (plist-get record :command) "get_messages")
                (clrhash etaf-pi--line-cache))
              (etaf-pi--schedule-paint)
-             (when (and (equal (plist-get record :command) "prompt")
-                        (buffer-live-p etaf-pi--composer))
-               (with-current-buffer etaf-pi--composer
-                 (setq etaf-pi--editor-sending nil)
-                 (force-mode-line-update)))
+             (when (equal (plist-get record :command) "prompt")
+               (setq etaf-pi--sending nil)
+               (etaf-pi--schedule-paint))
              (when (and after (eq (plist-get record :success) t))
                (funcall after record)))))) timeout)))
 
@@ -151,24 +152,23 @@
         (setq lines (append lines '("") (etaf-pi--wrap notice width)))))
     lines))
 
-(defun etaf-pi--focus-input ()
-  "Return an explicit toolbar action to the existing input pane."
-  (when (buffer-live-p etaf-pi--composer)
-    (when-let* ((window (get-buffer-window etaf-pi--composer t))) (select-window window))))
-
 (defun etaf-pi--make-actions (buffer)
   "Bind catalog controls to their owning conversation BUFFER."
   (list :compose (lambda ()
                    (with-current-buffer buffer
-                     (if (and (buffer-live-p etaf-pi--composer) (> (buffer-size etaf-pi--composer) 0))
-                         (with-current-buffer etaf-pi--composer (etaf-pi-editor-send))
-                       (etaf-pi-edit))))
+                     (let ((runtime (etaf-runtime-for-buffer buffer)))
+                       (cond
+                        ((and runtime (etaf-text-input-active-p runtime))
+                         (etaf-text-input-end))
+                        ((string-empty-p (string-trim (or (etaf-value etaf-pi--draft) "")))
+                         (etaf-pi-edit))
+                        (t (etaf-pi-send (etaf-value etaf-pi--draft)))))))
         :answer (lambda () (with-current-buffer buffer (call-interactively #'etaf-pi-answer)))
         :abort (lambda () (with-current-buffer buffer (etaf-pi-abort)))
-        :model (lambda () (with-current-buffer buffer (etaf-pi-select-model) (etaf-pi--focus-input)))
-        :thinking (lambda () (with-current-buffer buffer (etaf-pi-select-thinking) (etaf-pi--focus-input)))
-        :new (lambda () (with-current-buffer buffer (etaf-pi-new-session) (etaf-pi--focus-input)))
-        :resume (lambda () (with-current-buffer buffer (call-interactively #'etaf-pi-resume) (etaf-pi--focus-input)))
+        :model (lambda () (with-current-buffer buffer (etaf-pi-select-model)))
+        :thinking (lambda () (with-current-buffer buffer (etaf-pi-select-thinking)))
+        :new (lambda () (with-current-buffer buffer (etaf-pi-new-session)))
+        :resume (lambda () (with-current-buffer buffer (call-interactively #'etaf-pi-resume)))
         :tools (lambda () (with-current-buffer buffer (etaf-pi-show-tools)))
         :help #'etaf-pi-help
         :follow (lambda ()
@@ -176,39 +176,60 @@
                     (when-let* ((window (get-buffer-window buffer t))) (select-window window))
                     (etaf-pi-follow)))))
 
-(defun etaf-pi--editor-window-margins ()
-  "Restore this editor's margins after native buffer/window selection."
-  (when-let* ((window (get-buffer-window (current-buffer) t)))
-    (unless (equal (window-margins window) (cons left-margin-width right-margin-width))
-      (set-window-margins window left-margin-width right-margin-width))))
-
 (defun etaf-pi--paint (&optional rebuild)
-  "Update visible chat content and its compact native composer chrome."
+  "Update visible chat content, composer and navigation chrome."
   (etaf-pi--ensure-navigation)
   (let* ((title (file-name-nondirectory (directory-file-name default-directory)))
          (session (etaf-pi--state-session etaf-pi--state))
-         (model (plist-get session :model)))
+         (model (plist-get session :model))
+         (busy (and (member (etaf-pi--state-phase etaf-pi--state)
+                            '("回复中" "重试中" "压缩中")) t))
+         (pending (length (etaf-pi--state-dialogs etaf-pi--state))))
     (when-let* ((window (get-buffer-window (current-buffer) t)))
       (let* ((width (max 28 (window-body-width window)))
              (height (max 6 (window-body-height window)))
-             (layout (etaf-pi--layout width height)) (rows (max 1 (- height 5)))
+             (layout (etaf-pi--layout width height)) (rows (max 1 (- height 9)))
              (all (etaf-pi--transcript (plist-get layout :measure)))
              (start (if etaf-pi--follow (max 0 (- (length all) rows))
                       (min etaf-pi--offset (max 0 (- (length all) rows)))))
              (lines (cl-subseq all start (min (length all) (+ start rows))))
              (status (etaf-pi--summary (- width 8)))
              (runtime (etaf-runtime-for-buffer (current-buffer)))
-             (navigation (and (buffer-live-p etaf-pi--navigation) (get-buffer-window etaf-pi--navigation t))))
+             (navigation (and (buffer-live-p etaf-pi--navigation) (get-buffer-window etaf-pi--navigation t)))
+             (composer (list :draft etaf-pi--draft
+                             :placeholder "发消息，或输入 / 选择命令"
+                             :rows 3
+                             :completion (list #'etaf-pi--complete-command)
+                             :submit #'etaf-pi--composer-submit
+                             :cancel #'etaf-pi--composer-cancel
+                             :model (or (plist-get model :name) (plist-get model :id) "选择模型")
+                             :thinking (or (plist-get session :thinkingLevel) "off")
+                             :busy busy :pending pending :sending etaf-pi--sending
+                             :width width :actions etaf-pi--actions))
+             (controls (list (plist-get composer :model) (plist-get composer :thinking)
+                             busy pending etaf-pi--sending))
+             (rebuildp (or rebuild (null runtime)
+                           (not (equal etaf-pi--shape (list width height)))
+                           (not (equal controls etaf-pi--controls-painted))))
+             (editing (and runtime (etaf-text-input-active-p runtime))))
         (setq etaf-pi--layout-facts layout etaf-pi--offset start
               etaf-pi--total-lines (length all) etaf-pi--page-rows rows)
         (setq lines (cons (if etaf-pi--follow "" (etaf-pi--ink "查看历史 · g 回到最新" :muted))
                           (append lines (make-list (- rows (length lines)) ""))))
-        (if (or rebuild (null runtime) (not (equal etaf-pi--shape (list width height))))
-            (progn
-              (etaf-mount (current-buffer)
-                          (etaf-pi--shell-view title status lines layout navigation etaf-pi--actions)
-                          (list :viewport-height height))
-              (setq etaf-pi--shape (list width height)))
+        ;; A native session owns the buffer text.  Its ending flush republishes
+        ;; the field, but retained cohorts describe pre-session text, so the
+        ;; next paint after it ends rebuilds instead of patching.
+        (cond
+         (editing (setq etaf-pi--session-editing t))
+         ((or rebuildp etaf-pi--session-editing)
+          (setq etaf-pi--session-editing nil)
+          (etaf-mount (current-buffer)
+                      (etaf-pi--shell-view title status lines layout
+                                           navigation composer etaf-pi--actions)
+                      (list :viewport-height height))
+          (setq etaf-pi--shape (list width height)
+                etaf-pi--controls-painted controls))
+         (t
           (let (updates)
             (unless (equal-including-properties status (plist-get etaf-pi--painted :status))
               (push (cons 'etaf-pi-status status) updates))
@@ -216,18 +237,12 @@
                          (cl-every #'equal-including-properties lines (plist-get etaf-pi--painted :lines)))
               (push (cons 'etaf-pi-transcript
                           (mapconcat (lambda (line) (if (string-empty-p line) " " line)) lines "\n")) updates))
-            (when updates (etaf-runtime-update-host-contents runtime (nreverse updates)))))
+            (when (and runtime updates)
+              (etaf-runtime-update-host-contents runtime (nreverse updates))))))
         (setq etaf-pi--painted (list :status status :lines lines))
         (setq-local cursor-type nil)
         (set-window-hscroll window 0) (set-window-start window (point-min))))
-    (etaf-pi--sync-pane-views
-     title (or (plist-get model :name) (plist-get model :id) "选择模型")
-     (or (plist-get session :thinkingLevel) "off")
-     (and (member (etaf-pi--state-phase etaf-pi--state) '("回复中" "重试中" "压缩中")) t)
-     (length (etaf-pi--state-dialogs etaf-pi--state))
-     (or etaf-pi--session-changing
-         (and (buffer-live-p etaf-pi--composer) (buffer-local-value 'etaf-pi--editor-sending etaf-pi--composer)))
-     etaf-pi--actions)
+    (etaf-pi--sync-navigation title etaf-pi--actions)
     (setq etaf-pi--controls-phase (etaf-pi--state-phase etaf-pi--state))))
 
 (defun etaf-pi-info ()
@@ -243,37 +258,34 @@
                 :viewport (copy-sequence etaf-pi--shape)
                 :layout (copy-sequence etaf-pi--layout-facts)
                 :navigation (and (buffer-live-p etaf-pi--navigation) (get-buffer-window etaf-pi--navigation t) (buffer-name etaf-pi--navigation))
-                :composer-bar (and (buffer-live-p etaf-pi--composer-bar) (get-buffer-window etaf-pi--composer-bar t) (buffer-name etaf-pi--composer-bar))
-                :composer (when (buffer-live-p etaf-pi--composer)
-                            (with-current-buffer etaf-pi--composer
-                              (list :buffer (buffer-name) :characters (buffer-size)
-                                    :visible (and (get-buffer-window (current-buffer) t) t)
-                                    :sending etaf-pi--editor-sending))))))
+                :composer (let ((runtime (etaf-runtime-for-buffer (current-buffer))))
+                            (list :ref 'pi-composer
+                                  :active (and runtime (and (etaf-text-input-active-p runtime) t))
+                                  :text (and etaf-pi--draft (etaf-value etaf-pi--draft))
+                                  :dialog (and etaf-pi--composer-dialog t)
+                                  :sending (and etaf-pi--sending t))))))
 
 (defun etaf-pi-send (text &optional behavior)
   "Send TEXT or a supported slash command.  BEHAVIOR is steer or followUp.
-Running prompts default to followUp, so typing never drops an instruction."
+Running prompts default to followUp, so typing never drops an instruction.
+A command clears the composer; an accepted prompt clears only text that the
+composer still holds unchanged, so concurrent edits and failed sends survive."
   (etaf-pi--current)
   (when etaf-pi--session-changing (user-error "会话正在切换，请稍候再发送"))
   (unless (string-empty-p (string-trim text))
     (setq etaf-pi--follow t)
     (if (string-prefix-p "/" text)
-        (etaf-pi--slash text)
-      (setf (etaf-pi--state-draft etaf-pi--state) text)
-      (let* ((editor (and (buffer-live-p etaf-pi--composer) etaf-pi--composer))
-             (tick (and editor (equal text (etaf-ui-editor-value editor))
-                        (with-current-buffer editor (buffer-chars-modified-tick)))))
-        (etaf-pi--request
-         "prompt" (list :message text :streamingBehavior (or behavior "followUp"))
-         (lambda (_)
-           (if editor
-               (when (and tick (eq editor etaf-pi--composer)
-                          (buffer-live-p editor)
-                          (etaf-ui-editor-replace editor "" tick))
-                 (with-current-buffer editor (set-buffer-modified-p nil))
-                 (setf (etaf-pi--state-draft etaf-pi--state) nil))
-             (when (equal (etaf-pi--state-draft etaf-pi--state) text)
-               (setf (etaf-pi--state-draft etaf-pi--state) nil)))) 120)))))
+        (progn (etaf-pi--set-draft "") (etaf-pi--slash text))
+      (setq etaf-pi--sending t)
+      (etaf-pi--schedule-paint)
+      (etaf-pi--request
+       "prompt" (list :message text :streamingBehavior (or behavior "followUp"))
+       (lambda (_)
+         (when (and (equal (etaf-value etaf-pi--draft) text)
+                    (not (etaf-text-input-active-p (etaf-runtime-for-buffer (current-buffer)))))
+           (etaf-pi--set-draft ""))
+         (etaf-pi--schedule-paint))
+       120))))
 
 (defun etaf-pi-compose (text)
   "Read and send TEXT through native minibuffer editing with command completion."
@@ -285,7 +297,7 @@ Running prompts default to followUp, so typing never drops an instruction."
             (append '("/new" "/resume" "/model" "/thinking" "/abort" "/compact" "/quit" "/help")
                     (mapcar (lambda (command) (concat "/" (plist-get command :name)))
                             (etaf-pi--state-commands etaf-pi--state)))
-            nil nil (etaf-pi--state-draft etaf-pi--state) 'etaf-pi-input-history))))
+            nil nil (and etaf-pi--draft (etaf-value etaf-pi--draft)) 'etaf-pi-input-history))))
   (etaf-pi-send text))
 
 (defun etaf-pi--slash (text)
@@ -314,13 +326,11 @@ Running prompts default to followUp, so typing never drops an instruction."
      (let ((data (plist-get record :data)))
        (let ((recovered (string-join (append (plist-get data :steering) (plist-get data :followUp)) "\n\n")))
          (unless (string-empty-p recovered)
-           (setf (etaf-pi--state-draft etaf-pi--state)
-                 (string-join (delq nil (list (etaf-pi--state-draft etaf-pi--state) recovered)) "\n\n"))
-           (when (buffer-live-p etaf-pi--composer)
-             (with-current-buffer etaf-pi--composer
-               (goto-char (point-max))
-               (unless (= (buffer-size) 0) (insert "\n\n"))
-               (insert recovered))))))
+           (let ((current (and etaf-pi--draft (etaf-value etaf-pi--draft))))
+             (etaf-pi--set-draft
+              (string-join (delq nil (list (unless (string-empty-p (or current "")) current)
+                                           recovered))
+                           "\n\n"))))))
      (etaf-pi--request "abort" nil (lambda (_) (etaf-pi-refresh)) 60))))
 
 (defun etaf-pi--require-idle ()
@@ -414,101 +424,54 @@ Interactively use native completion/confirmation. No unattended approval."
                 (pop (etaf-pi--state-dialogs etaf-pi--state))))
         (etaf-pi--schedule-paint)))))
 
-(defvar etaf-pi-editor-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'etaf-pi-editor-send)
-    (define-key map (kbd "C-c C-k") #'etaf-pi-editor-cancel)
-    (define-key map (kbd "RET") #'etaf-pi-editor-send)
-    (define-key map (kbd "<S-return>") #'newline)
-    (define-key map (kbd "C-j") #'newline)
-    (define-key map (kbd "C-<return>") #'etaf-pi-editor-send)
-    (define-key map (kbd "M-TAB") #'completion-at-point) map))
-
-(defun etaf-pi--editor-changed (buffer)
-  "Keep BUFFER's unsent draft without republishing the transcript."
-  (with-current-buffer buffer
-    (when (and (not etaf-pi--editor-dialog) (buffer-live-p etaf-pi--editor-owner))
-      (let ((text (etaf-ui-editor-value buffer)))
-        (with-current-buffer etaf-pi--editor-owner
-          (when etaf-pi--state (setf (etaf-pi--state-draft etaf-pi--state) text)))))))
-
 (defun etaf-pi--complete-command ()
-  "Offer Pi command completion at the beginning of the native draft."
-  (when (and (buffer-live-p etaf-pi--editor-owner)
-             (save-excursion (goto-char (point-min)) (looking-at "/[^ \n]*"))
-             (<= (point) (match-end 0)))
-    (let ((commands (with-current-buffer etaf-pi--editor-owner
-                      (etaf-pi--state-commands etaf-pi--state))))
-      (list (point-min) (point)
-            (append '("/new" "/resume" "/model" "/thinking" "/abort" "/compact" "/help")
-                    (mapcar (lambda (item) (concat "/" (plist-get item :name))) commands))))))
+  "Offer Pi command completion for a slash command in the composer."
+  (let ((end (point)) (line-start (line-beginning-position)))
+    (save-excursion
+      (goto-char line-start)
+      (skip-chars-forward " \t")
+      (let ((start (point)))
+        (when (and (<= start end)
+                   (string-match-p "\\`/[^ \t\n]*\\'"
+                                   (buffer-substring-no-properties start end)))
+          (list start end
+                (append '("/new" "/resume" "/model" "/thinking" "/abort" "/compact" "/quit" "/help")
+                        (mapcar (lambda (item) (concat "/" (plist-get item :name)))
+                                (etaf-pi--state-commands etaf-pi--state)))
+                :exclusive 'no))))))
 
-(define-derived-mode etaf-pi-editor-mode text-mode "Pi 输入"
-  "Native multiline draft. Enter sends; Shift+Enter inserts a newline."
-  (setq-local header-line-format " " mode-line-format nil)
-  (face-remap-set-base 'header-line (list :background (etaf-pi-color :surface) :box nil))
-  (etaf-ui-editor-mode 1)
-  (etaf-ui-editor-configure
-   :placeholder "发消息，或输入 / 选择命令"
-   :placeholder-face (list :foreground (etaf-pi-color :muted))
-   :on-change #'etaf-pi--editor-changed)
-  (setq-local left-margin-width 2 right-margin-width 2 window-size-fixed 'height)
-  (setq-local completion-at-point-functions '(etaf-pi--complete-command))
-  (face-remap-set-base 'default (list :background (etaf-pi-color :surface) :foreground (etaf-pi-color :ink)))
-  (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
-  (visual-line-mode 1)
-  (add-hook 'post-command-hook #'etaf-pi--editor-window-margins nil t)
-  (add-hook 'window-configuration-change-hook #'etaf-pi--editor-window-margins nil t))
+(defun etaf-pi--set-draft (text)
+  "Set this client's composer TEXT and republish the field."
+  (when (and (buffer-live-p (current-buffer)) etaf-pi--draft)
+    (unless (equal (etaf-value etaf-pi--draft) text)
+      (setf (etaf-value etaf-pi--draft) text)
+      (when-let* ((runtime (etaf-runtime-for-buffer (current-buffer))))
+        (etaf-runtime-flush runtime)))))
+
+(defun etaf-pi--composer-submit (text)
+  "Handle composer TEXT: answer the pending dialog or send a prompt."
+  (let ((dialog etaf-pi--composer-dialog))
+    (setq etaf-pi--composer-dialog nil)
+    (if dialog (etaf-pi-answer text nil) (etaf-pi-send text))
+    (etaf-pi--schedule-paint)))
+
+(defun etaf-pi--composer-cancel (text)
+  "Stop editing while keeping TEXT as the draft.
+A dialog editor cancels its dialog instead of keeping the text."
+  (if etaf-pi--composer-dialog
+      (progn (setq etaf-pi--composer-dialog nil) (etaf-pi-answer nil t))
+    (etaf-pi--set-draft text))
+  (etaf-pi--schedule-paint))
 
 (defun etaf-pi-edit (&optional text dialog)
-  "Open native multiline editor with TEXT.
-DIALOG optionally identifies a Pi editor request."
+  "Focus the in-layout composer, optionally prefilled with TEXT.
+DIALOG marks a Pi editor request answered by the next submission."
   (interactive)
   (etaf-pi--current)
-  (let* ((owner (current-buffer))
-         (initial (or text (etaf-pi--state-draft etaf-pi--state) ""))
-         (buffer (get-buffer-create (format "*Pi %s: %s*" (if dialog "确认" "输入") (buffer-name owner)))))
-    (unless dialog (setq etaf-pi--composer buffer))
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'etaf-pi-editor-mode)
-        (etaf-pi-editor-mode) (insert initial) (set-buffer-modified-p nil))
-      (setq etaf-pi--editor-owner owner etaf-pi--editor-dialog dialog))
-    (if dialog
-        (let ((display-buffer-overriding-action '((display-buffer-same-window)))) (pop-to-buffer buffer))
-      (etaf-pi--show-input buffer))
-    (with-current-buffer owner (etaf-pi--paint))))
-
-(defun etaf-pi--editor-finish (send)
-  "Submit when SEND, or hide the native draft without discarding it."
-  (let ((owner etaf-pi--editor-owner) (dialog etaf-pi--editor-dialog)
-        (text (buffer-substring-no-properties (point-min) (point-max))) (editor (current-buffer)))
-    (unless (buffer-live-p owner) (user-error "所属 Pi 会话已关闭；文本仍在此缓冲区"))
-    (when etaf-pi--editor-sending (user-error "正在等 Pi 确认接收，文本仍在此处"))
-    (when (and send (string-empty-p (string-trim text))) (user-error "先写一点内容再发送"))
-    (with-current-buffer owner
-      (if dialog
-          (progn
-            (unless (equal (plist-get dialog :id)
-                           (plist-get (car (etaf-pi--state-dialogs etaf-pi--state)) :id))
-              (user-error "确认已失效；文本仍保留在编辑缓冲区"))
-            (etaf-pi-answer text (not send)))
-        (if send (etaf-pi-send text) (setf (etaf-pi--state-draft etaf-pi--state) text))))
-    (if (and send (not dialog))
-        (when (buffer-live-p editor)
-          (with-current-buffer editor
-            (if (string-prefix-p "/" text) (progn (erase-buffer) (set-buffer-modified-p nil))
-              (setq etaf-pi--editor-sending t)))
-          (when-let* ((window (get-buffer-window editor t))) (select-window window)))
-      (with-current-buffer owner (unless dialog (etaf-pi--hide-input editor)))
-      (let ((display-buffer-overriding-action '((display-buffer-same-window)))) (pop-to-buffer owner))
-      (when dialog (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor)))
-    (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi--schedule-paint)))))
-(defun etaf-pi-editor-send ()
-  "Submit a nonempty native draft, keeping the editor open."
-  (interactive)
-  (unless (string-empty-p (string-trim (buffer-substring-no-properties (point-min) (point-max))))
-    (etaf-pi--editor-finish t)))
-(defun etaf-pi-editor-cancel () "Return without submitting; keep a draft." (interactive) (etaf-pi--editor-finish nil))
+  (setq etaf-pi--composer-dialog dialog)
+  (when (or text dialog) (etaf-pi--set-draft (or text "")))
+  (let ((runtime (etaf-runtime-for-buffer (current-buffer))))
+    (when runtime (etaf-text-input-begin runtime 'pi-composer))))
 
 (defun etaf-pi-page-up (&optional lines)
   "Read the previous viewport, or LINES, without following new output."
@@ -545,7 +508,7 @@ DIALOG optionally identifies a Pi editor request."
   "Show native-client commands and RPC compatibility limits."
   (interactive)
   (with-help-window "*Pi 帮助*"
-    (princ "ETAF Pi\n\ni / e  底部多行输入；Enter 发送，Shift+Enter / C-j 换行\n:  快速命令（TAB 补全）\nM-TAB  在输入区补全命令\na  回答待处理确认；C-g 取消而非批准\nC-c C-k  停止并收回队列\nj/k 或 PageDown/PageUp  翻阅历史\ng  跟随最新回复\nt  完整工具输出\nm  模型   T  思考级别\nn  新会话   r  恢复会话   R  断线重连\nq  关闭当前客户端\n\n/new /resume /model /thinking /abort /compact /quit /help\nSkills、模板和扩展命令经 Pi 的 get_commands 发现。\nRPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。\n会话、认证和技能由原来的 Pi 管理。\n")))
+    (princ "ETAF Pi\n\ni / e  底部输入区原地编辑；Enter 发送，Shift+Enter / C-j 换行\nEsc / C-c C-k  收起输入区并保留草稿（确认框则取消它）\n:  快速命令（TAB 补全）\nM-TAB  在输入区补全 Slash 命令\na  回答待处理确认；C-g 取消而非批准\nC-c C-k  停止并收回队列（输入区未激活时）\nj/k 或 PageDown/PageUp  翻阅历史\ng  跟随最新回复\nt  完整工具输出\nm  模型   T  思考级别\nn  新会话   r  恢复会话   R  断线重连\nq  关闭当前客户端\n\n/new /resume /model /thinking /abort /compact /quit /help\nSkills、模板和扩展命令经 Pi 的 get_commands 发现。\nRPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。\n会话、认证和技能由原来的 Pi 管理。\n")))
 
 (defun etaf-pi-reconnect ()
   "Reconnect a stopped backend, resuming the last known saved session."
@@ -571,13 +534,8 @@ DIALOG optionally identifies a Pi editor request."
     (when etaf-pi--paint-timer (cancel-timer etaf-pi--paint-timer) (setq etaf-pi--paint-timer nil))
     (when etaf-pi--connection (etaf-pi-rpc-close etaf-pi--connection))
     (etaf-pi--dispose-panes)
-    (when (buffer-live-p etaf-pi--composer)
-      (with-current-buffer etaf-pi--composer
-        (if (> (buffer-size) 0)
-            (message "未发送的草稿保留在 %s" (buffer-name))
-          (when-let* ((window (get-buffer-window (current-buffer) t)))
-            (unless (one-window-p t (window-frame window)) (delete-window window)))
-          (kill-buffer (current-buffer)))))
+    (when (and etaf-pi--draft (not (string-empty-p (etaf-value etaf-pi--draft))))
+      (message "未发送的草稿保留在 %s" (buffer-name)))
     (when-let* ((runtime (etaf-runtime-for-buffer (current-buffer)))) (etaf-unmount runtime))))
 
 (defun etaf-pi-close ()
@@ -618,15 +576,12 @@ DIALOG optionally identifies a Pi editor request."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (cond (etaf-pi--state buffer)
-            ((buffer-live-p etaf-pi--editor-owner) etaf-pi--editor-owner)
             ((buffer-live-p etaf-pi--pane-owner) etaf-pi--pane-owner)))))
 
 (defun etaf-pi--hide-client-panes (owner)
-  "Hide OWNER's chrome without stopping its backend or discarding drafts."
+  "Hide OWNER's navigation pane without stopping its backend or drafts."
   (when (buffer-live-p owner)
-    (with-current-buffer owner
-      (etaf-pi--hide-input etaf-pi--composer)
-      (etaf-pi--remove-pane-window etaf-pi--navigation))))
+    (with-current-buffer owner (etaf-pi--remove-pane-window etaf-pi--navigation))))
 
 ;;;###autoload
 (defun etaf-pi-open (&optional directory new)
@@ -658,6 +613,7 @@ Reuse its buffer unless NEW is non-nil.  Return the client buffer immediately."
         (etaf-pi-mode)
         (setq default-directory directory etaf-pi--state (etaf-pi-state-create)
               etaf-pi--line-cache (make-hash-table :test #'eq)
+              etaf-pi--draft (etaf-ref "")
               etaf-pi--actions (etaf-pi--make-actions buffer))
         (setq-local truncate-lines t mode-line-format nil)
         (setq-local scroll-margin 0 hscroll-margin 0)
@@ -680,11 +636,7 @@ Reuse its buffer unless NEW is non-nil.  Return the client buffer immediately."
                         (etaf-pi--state-error etaf-pi--state) (error-message-string err))
                  (etaf-pi--schedule-paint)))))
     (with-current-buffer buffer
-      (setq etaf-pi--main-window (get-buffer-window buffer t))
-      (save-selected-window (etaf-pi-edit)))
-    (when (called-interactively-p 'any)
-      (when-let* ((window (get-buffer-window (buffer-local-value 'etaf-pi--composer buffer) t)))
-        (select-window window)))
+      (setq etaf-pi--main-window (get-buffer-window buffer t)))
     buffer))
 (provide 'etaf-pi-app)
 ;;; etaf-pi-app.el ends here

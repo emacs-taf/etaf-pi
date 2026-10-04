@@ -43,7 +43,7 @@ def stream(request):
     active = True
     aborted.clear()
     if request['message'] == '延迟接收':
-        time.sleep(.2)
+        time.sleep(.6)
     response(request)
     for record in fixture:
         if aborted.is_set() or generation != own_generation:

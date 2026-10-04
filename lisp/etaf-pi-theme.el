@@ -33,9 +33,14 @@
   "Supply the shared catalog with the workbench's semantic palette."
   (list :ui-fg (etaf-pi-color :ink) :ui-bg (etaf-pi-color :bg)
         :ui-muted (etaf-pi-color :muted) :ui-border (etaf-pi-color :border)
-        :ui-panel-fg (etaf-pi-color :ink) :ui-panel-bg (etaf-pi-color :surface)
+        :ui-muted-fg (etaf-pi-color :muted)
+        :ui-panel-fg (etaf-pi-color :ink)
+        :ui-panel-bg (etaf-pi-color :surface-2)
         :ui-panel-border (etaf-pi-color :border)
-        :ui-success-fg (etaf-pi-color :accent)
+        :ui-success-fg (etaf-pi-color :ok) :ui-success-bg (etaf-pi-color :accent-soft)
+        :ui-danger-fg (etaf-pi-color :error)
+        :ui-accent (etaf-pi-color :accent) :ui-accent-fg (etaf-pi-color :button-ink)
+        :ui-accent-soft-bg (etaf-pi-color :accent-soft)
         :ui-progress-track (etaf-pi-color :surface-2)))
 
 (provide 'etaf-pi-theme)

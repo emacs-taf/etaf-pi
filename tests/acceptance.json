@@ -4,9 +4,9 @@
   "support": [],
   "cases": [
     {
-      "name": "etaf-pi-test-acknowledgement-preserves-edit-then-undo",
+      "name": "etaf-pi-test-acknowledgement-preserves-active-edit",
       "file": "tests/etaf-pi-tests.el",
-      "purpose": "A delayed prompt acceptance preserves a draft edited and undone back to the original text instead of clearing it by string equality."
+      "purpose": "A delayed prompt acceptance leaves an active in-place editing session and its text untouched."
     },
     {"name": "etaf-pi-test-stream-and-framing", "file": "tests/etaf-pi-tests.el", "purpose": "Fragmented UTF-8 and CRLF records reconstruct a captured real stream."},
     {"name": "etaf-pi-test-correlation-and-timeout", "file": "tests/etaf-pi-tests.el", "purpose": "Out-of-order replies correlate and missing replies time out without retries."},
@@ -14,9 +14,9 @@
     {"name": "etaf-pi-test-authoritative-end-and-retry", "file": "tests/etaf-pi-tests.el", "purpose": "Final messages replace indexed deltas and retries do not settle prematurely."},
     {"name": "etaf-pi-test-dialog-and-shutdown", "file": "tests/etaf-pi-tests.el", "purpose": "Dialog ids and false responses survive transport; close is idempotent."},
     {"name": "etaf-pi-test-native-client-workflow", "file": "tests/etaf-pi-tests.el", "purpose": "The native client sends, switches settings, cancels dialogs, resumes and closes."},
-    {"name": "etaf-pi-test-persistent-draft", "file": "tests/etaf-pi-tests.el", "purpose": "Native input remains open after send and preserves cancelled drafts."},
+    {"name": "etaf-pi-test-composer-draft-and-send", "file": "tests/etaf-pi-tests.el", "purpose": "The in-layout composer keeps a cancelled draft and clears the acknowledged text."},
     {"name": "etaf-pi-test-draft-failure-and-concurrent-edit", "file": "tests/etaf-pi-tests.el", "purpose": "Failed sends and edits made before acknowledgement retain their input."},
-    {"name": "etaf-pi-test-chat-keys-and-session-switch-guard", "file": "tests/etaf-pi-tests.el", "purpose": "Standard chat keys preserve multiline input and pending session changes reject sends."},
+    {"name": "etaf-pi-test-composer-keys-and-session-switch-guard", "file": "tests/etaf-pi-tests.el", "purpose": "Shift+Enter adds a line, Enter sends, and pending session changes reject sends."},
     {"name": "etaf-pi-test-reopen-and-switch-owned-panes", "file": "tests/etaf-pi-tests.el", "purpose": "Reopening from input reuses panes and switching clients preserves the prior hidden session without nested layouts."},
     {"name": "etaf-pi-test-reentrant-listener-preserves-wire-order", "file": "tests/etaf-pi-tests.el", "purpose": "Callbacks yielding for subprocess output cannot reorder JSONL events and responses."}
   ]

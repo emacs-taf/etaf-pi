@@ -135,89 +135,95 @@
           (should-not (buffer-live-p buffer)))
       (when (buffer-live-p buffer) (with-current-buffer buffer (etaf-pi-close))))))
 
-(ert-deftest etaf-pi-test-persistent-draft ()
-  "Native input stays open; acknowledged text clears, cancelled drafts survive."
-  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+(ert-deftest etaf-pi-test-composer-draft-and-send ()
+  "The composer edits in place; a cancelled draft survives and an acked one clears."
+  (let ((etaf-pi-command etaf-pi-test--command) owner)
     (save-window-excursion
       (unwind-protect
           (progn
             (setq owner (etaf-pi-open temporary-file-directory t))
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
-            (etaf-pi-edit)
-            (setq editor (current-buffer))
-            (insert "多行消息\n第二行")
-            (etaf-pi-editor-send)
-            (should (eq (current-buffer) editor))
-            (etaf-pi-test--wait (lambda () (= (buffer-size editor) 0)))
-            (should (buffer-live-p editor))
-            (insert "未发送的草稿")
-            (etaf-pi-editor-cancel)
-            (should (eq (current-buffer) owner))
-            (etaf-pi-edit)
-            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "未发送的草稿")))
-        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
-        (when (buffer-live-p editor)
-          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+            (with-current-buffer owner
+              (etaf-pi-edit)
+              (insert "未发送的草稿")
+              (etaf-text-input-end t))
+            (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
+                           "未发送的草稿"))
+            (with-current-buffer owner
+              (etaf-pi-edit)
+              (should (etaf-text-input-active-p (etaf-runtime-for-buffer owner)))
+              (insert "\n第二行")
+              (etaf-text-input-end))
+            (etaf-pi-test--wait
+             (lambda ()
+               (and (equal (plist-get (etaf-pi-info) :phase) "就绪")
+                    (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")
+                    (with-current-buffer owner
+                      (string-match-p "工具 · read"
+                                      (buffer-substring-no-properties (point-min) (point-max)))))))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close))))))))
 
 (ert-deftest etaf-pi-test-draft-failure-and-concurrent-edit ()
   "Failed sends and text edited before the ack are never discarded."
-  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+  (let ((etaf-pi-command etaf-pi-test--command) owner)
     (save-window-excursion
       (unwind-protect
           (progn
             (setq owner (etaf-pi-open temporary-file-directory t))
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
-            (etaf-pi-edit) (setq editor (current-buffer))
-            (insert "拒绝发送") (etaf-pi-editor-send)
+            (with-current-buffer owner
+              (etaf-pi-edit) (insert "拒绝发送") (etaf-text-input-end))
             (etaf-pi-test--wait (lambda () (with-current-buffer owner (plist-get (etaf-pi-info) :error))))
-            (should (equal (buffer-string) "拒绝发送"))
-            (should-not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))
-            (erase-buffer) (insert "延迟接收") (etaf-pi-editor-send)
-            (insert "\n继续编辑")
+            (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "拒绝发送"))
+            (should-not (plist-get (plist-get (etaf-pi-info) :composer) :sending))
+            ;; A delayed acknowledgement must not clear text edited meanwhile.
+            (with-current-buffer owner
+              (etaf-pi-edit "延迟接收") (etaf-text-input-end)
+              (etaf-pi-edit) (insert "\n继续编辑"))
             (etaf-pi-test--wait
-             (lambda () (not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))))
-            (should (equal (buffer-string) "延迟接收\n继续编辑")))
-        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
-        (when (buffer-live-p editor)
-          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+             (lambda () (not (plist-get (plist-get (etaf-pi-info) :composer) :sending))))
+            (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
+                           "延迟接收\n继续编辑"))
+            (with-current-buffer owner (etaf-text-input-end t)))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))))))
 
-(ert-deftest etaf-pi-test-acknowledgement-preserves-edit-then-undo ()
-  "A delayed acceptance must not clear a draft edited back to the same text."
-  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+(ert-deftest etaf-pi-test-acknowledgement-preserves-active-edit ()
+  "A delayed acceptance must not disturb an active editing session."
+  (let ((etaf-pi-command etaf-pi-test--command) owner)
     (save-window-excursion
       (unwind-protect
           (progn
             (setq owner (etaf-pi-open temporary-file-directory t))
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
-            (etaf-pi-edit) (setq editor (current-buffer))
-            (buffer-enable-undo)
-            (insert "延迟接收")
-            (undo-boundary)
-            (etaf-pi-editor-send)
-            (insert " changed")
-            (undo-boundary)
-            (let ((last-command nil)) (undo-only 1))
-            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "延迟接收"))
+            (with-current-buffer owner
+              (etaf-pi-edit "延迟接收")
+              (etaf-text-input-end)
+              (etaf-pi-edit)
+              (insert " changed"))
             (etaf-pi-test--wait
-             (lambda () (not (with-current-buffer owner (plist-get (plist-get (etaf-pi-info) :composer) :sending)))))
-            (should (equal (buffer-substring-no-properties (point-min) (point-max)) "延迟接收")))
-        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
-        (when (buffer-live-p editor)
-          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+             (lambda () (not (plist-get (plist-get (etaf-pi-info) :composer) :sending))))
+            (with-current-buffer owner
+              (should (etaf-text-input-active-p (etaf-runtime-for-buffer owner)))
+              (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "延迟接收 changed"))
+              (etaf-text-input-end t)))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))))))
 
-(ert-deftest etaf-pi-test-chat-keys-and-session-switch-guard ()
-  "Enter sends, Shift+Enter adds a line, and a pending session switch blocks sends."
-  (let ((etaf-pi-command etaf-pi-test--command) owner editor)
+(ert-deftest etaf-pi-test-composer-keys-and-session-switch-guard ()
+  "Shift+Enter adds a line, Enter sends, and a pending session switch blocks sends."
+  (let ((etaf-pi-command etaf-pi-test--command) owner)
     (save-window-excursion
       (unwind-protect
           (progn
             (setq owner (etaf-pi-open temporary-file-directory t))
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
-            (etaf-pi-edit) (setq editor (current-buffer))
-            (insert "第一行") (execute-kbd-macro (kbd "<S-return>")) (insert "第二行")
-            (should (equal (buffer-string) "第一行\n第二行"))
-            (execute-kbd-macro (kbd "RET"))
-            (etaf-pi-test--wait (lambda () (= (buffer-size editor) 0)))
+            (with-current-buffer owner
+              (etaf-pi-edit)
+              (insert "第一行") (execute-kbd-macro (kbd "<S-return>")) (insert "第二行")
+              (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
+                             "第一行\n第二行"))
+              (execute-kbd-macro (kbd "RET")))
+            (etaf-pi-test--wait
+             (lambda () (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")))
             (with-current-buffer owner
               (etaf-pi-test--wait (lambda () (let ((info (etaf-pi-info)))
                                              (and (equal (plist-get info :phase) "就绪")
@@ -226,9 +232,7 @@
               (should (plist-get (etaf-pi-info) :session-changing))
               (should-error (etaf-pi-send "切换时不发送") :type 'user-error)
               (etaf-pi-test--wait (lambda () (not (plist-get (etaf-pi-info) :session-changing))))))
-        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))
-        (when (buffer-live-p editor)
-          (with-current-buffer editor (set-buffer-modified-p nil)) (kill-buffer editor))))))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))))))
 
 (ert-deftest etaf-pi-test-reopen-and-switch-owned-panes ()
   "Reopening from input reuses the client; another client does not nest panes."

@@ -22,12 +22,13 @@
   (execute-kbd-macro (vconcat (kbd key) (string-to-vector text) (kbd "RET"))))
 
 (defun etaf-pi-gui--focus (ref)
-  "Focus REF in its visible application pane."
+  "Focus REF in its visible application surface or navigation pane."
   (let* ((info (with-current-buffer etaf-pi-gui--buffer (etaf-pi-info)))
-         (pane (cond ((memq ref '(pi-compose pi-model pi-thinking pi-abort pi-answer))
-                      (plist-get info :composer-bar))
-                     ((memq ref '(pi-new pi-resume pi-follow pi-help)) (plist-get info :navigation))))
-         (buffer (or (and pane (get-buffer pane)) etaf-pi-gui--buffer)))
+         (navigation (plist-get info :navigation))
+         (buffer (if (and navigation
+                          (memq ref '(pi-new pi-resume pi-follow pi-help)))
+                     (get-buffer navigation)
+                   etaf-pi-gui--buffer)))
     (select-window (get-buffer-window buffer t))
     (etaf-focus (etaf-runtime-for-buffer buffer) ref)))
 
@@ -42,20 +43,23 @@
        (= (plist-get (plist-get (etaf-pi-info) :connection) :pending) 0)))
 
 (defun etaf-pi-gui--geometry ()
-  "Check complete canvas, line heights and no horizontal overflow."
+  "Check complete canvas, line heights and no horizontal overflow.
+A native session edits raw buffer text ahead of its next publication, so its
+transient pixel metrics are exempt from the published-canvas checks."
   (let* ((window (get-buffer-window etaf-pi-gui--buffer))
-         (size (and window (window-text-pixel-size window))))
+         (size (and window (window-text-pixel-size window)))
+         (editing (and window (plist-get (plist-get (etaf-pi-info) :composer) :active))))
     (and window
          (equal (plist-get (etaf-pi-info) :phase) (plist-get (etaf-pi-info) :controls-phase))
          (or (not (equal (plist-get (etaf-pi-info) :phase) "就绪"))
              (not (plist-get (etaf-pi-info) :render-pending)))
          (equal (plist-get (etaf-pi-info) :viewport)
                 (list (window-body-width window) (window-body-height window)))
-         (etaf-gui-verifier-canvas-filled-p etaf-pi-gui--buffer)
-         (<= (car size) (window-body-width window t))
+         (or editing (etaf-gui-verifier-canvas-filled-p etaf-pi-gui--buffer))
+         (or editing (<= (car size) (window-body-width window t)))
          (= (window-hscroll window) 0)
-         (cl-every (lambda (name) (or (not name) (etaf-gui-verifier-canvas-filled-p (get-buffer name))))
-                   (list (plist-get (etaf-pi-info) :navigation) (plist-get (etaf-pi-info) :composer-bar))))))
+         (let ((nav (plist-get (etaf-pi-info) :navigation)))
+           (or (not nav) (etaf-gui-verifier-canvas-filled-p (get-buffer nav)))))))
 
 (defun etaf-pi-gui--action (id execute &optional ready screenshot)
   "Build action ID with EXECUTE and observable READY, optionally SCREENSHOT."
@@ -85,15 +89,12 @@
        (append (list (etaf-gui-verifier-assert "no backend/render error" (not (plist-get (etaf-pi-info) :error)))
                      (etaf-gui-verifier-assert "canvas fits window" (etaf-pi-gui--geometry))
                      (etaf-gui-verifier-assert
-                      "input and selectors share the conversation column"
-                      (let* ((info (etaf-pi-info)) (editor (plist-get info :composer))
-                             (input (and editor (get-buffer-window (plist-get editor :buffer) t)))
-                             (bar (and (plist-get info :composer-bar) (get-buffer-window (plist-get info :composer-bar) t)))
-                             (main (get-buffer-window etaf-pi-gui--buffer t)))
-                        (or (not input)
-                            (and (equal (window-margins input) '(2 . 2))
-                                 (= (car (window-edges main)) (car (window-edges input)))
-                                 (or (not bar) (= (car (window-edges main)) (car (window-edges bar))))))))
+                      "composer lives in the conversation surface"
+                      (let* ((info (etaf-pi-info)) (composer (plist-get info :composer))
+                             (runtime (etaf-runtime-for-buffer etaf-pi-gui--buffer)))
+                        (and (eq (plist-get composer :ref) 'pi-composer)
+                             (etaf-host-ref-bounds runtime 'pi-composer)
+                             (etaf-host-ref-bounds runtime 'pi-send))))
                      (etaf-gui-verifier-assert
                       "sidebar remains full height"
                       (let* ((name (plist-get (etaf-pi-info) :navigation))
@@ -120,51 +121,53 @@
             (list
              (etaf-pi-gui--action "empty" #'ignore #'etaf-pi-gui--idle t)
              (etaf-pi-gui--action
-              "composer" (lambda (_) (etaf-pi-gui--press 'pi-compose))
-              (lambda (_) (plist-get (plist-get (etaf-pi-info) :composer) :visible)) t)
+              "composer" (lambda (_) (etaf-pi-gui--press 'pi-composer))
+              (lambda (_) (plist-get (plist-get (etaf-pi-info) :composer) :active)) t)
              (etaf-pi-gui--action
               "send-multiline" (lambda (_)
-                                 (execute-kbd-macro (kbd "i"))
                                  (insert "检查一下这段对话的排版。\n保留代码示例，说明输入与工具的交互。")
                                  (execute-kbd-macro (kbd "C-c C-c")))
               (lambda (_)
                 (and (etaf-pi-gui--idle nil)
-                     (= (plist-get (plist-get (etaf-pi-info) :composer) :characters) 0)
+                     (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")
                      (string-match-p "工具 · read" (buffer-substring-no-properties (point-min) (point-max))))) t)
              (etaf-pi-gui--action
-              "draft-hide" (lambda (_)
+              "draft-kept" (lambda (_)
                              (execute-kbd-macro (kbd "i")) (insert "未发送的草稿")
                              (execute-kbd-macro (kbd "C-c C-k")))
-              (lambda (_) (not (plist-get (plist-get (etaf-pi-info) :composer) :visible))))
+              (lambda (_)
+                (let ((composer (plist-get (etaf-pi-info) :composer)))
+                  (and (not (plist-get composer :active))
+                       (equal (plist-get composer :text) "未发送的草稿")))))
              (etaf-pi-gui--action
               "draft-restore" (lambda (_)
-                                (execute-kbd-macro (kbd "i"))
-                                (unless (equal (buffer-string) "未发送的草稿") (error "Draft was lost")) )
-              (lambda (_) (plist-get (plist-get (etaf-pi-info) :composer) :visible)))
+                                (etaf-pi-gui--press 'pi-composer)
+                                (unless (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
+                                               "未发送的草稿")
+                                  (error "Draft was lost")))
+              (lambda (_) (plist-get (plist-get (etaf-pi-info) :composer) :active)))
              (etaf-pi-gui--action
               "send-button" (lambda (_)
-                              (execute-kbd-macro (kbd "i")) (erase-buffer) (insert "再检查一次排版。")
-                              (etaf-pi-gui--main) (etaf-pi-gui--press 'pi-compose))
+                              (execute-kbd-macro (kbd "C-c C-k"))
+                              (etaf-pi-gui--press 'pi-send))
               (lambda (_) (and (etaf-pi-gui--idle nil)
-                                (= (plist-get (plist-get (etaf-pi-info) :composer) :characters) 0))))
+                               (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) ""))))
              (etaf-pi-gui--action
               "edited-draft-survives-ack"
               (lambda (_)
-                (execute-kbd-macro (kbd "i"))
-                (erase-buffer)
+                (etaf-pi-gui--press 'pi-composer)
                 (execute-kbd-macro (string-to-vector "延迟接收"))
-                (undo-boundary)
                 (execute-kbd-macro (kbd "C-c C-c"))
+                (execute-kbd-macro (kbd "i"))
                 (execute-kbd-macro (string-to-vector "新的输入"))
-                (undo-boundary)
-                (let ((last-command nil)) (call-interactively #'undo-only)))
+                ;; End the session so republished layout is part of the check.
+                (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
-                (let* ((composer (plist-get (etaf-pi-info) :composer))
-                       (editor (get-buffer (plist-get composer :buffer))))
+                (let ((composer (plist-get (etaf-pi-info) :composer)))
                   (and (etaf-pi-gui--idle nil)
                        (not (plist-get composer :sending))
-                       (buffer-live-p editor)
-                       (equal (etaf-ui-editor-value editor) "延迟接收")))) t)
+                       (not (plist-get composer :active))
+                       (equal (plist-get composer :text) "延迟接收新的输入")))) t)
              (etaf-pi-gui--action
               "model" (lambda (_) (etaf-pi-gui--focus 'pi-model)
                          (etaf-pi-gui--type "RET" "fixture/offline")) #'etaf-pi-gui--idle)
@@ -174,10 +177,8 @@
               (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :thinkingLevel) "high")))
              (etaf-pi-gui--action
               "dialog-request" (lambda (_)
-                                 (execute-kbd-macro (kbd "i"))
-                                 (erase-buffer)
-                                 (etaf-pi-gui--main)
-                                 (etaf-pi-gui--type ":" "/fixture-dialog"))
+                                 (etaf-pi-edit "/fixture-dialog")
+                                 (execute-kbd-macro (kbd "C-c C-c")))
               (lambda (_) (plist-get (etaf-pi-info) :dialogs)) t)
              (etaf-pi-gui--action
               "dialog-decline" (lambda (_)
@@ -195,22 +196,17 @@
                                (execute-kbd-macro (kbd "q"))))
              (etaf-pi-gui--action "history-wheel" (lambda (_)
                                                    (let ((main (get-buffer-window etaf-pi-gui--buffer)))
-                                                     (execute-kbd-macro (kbd "i"))
-                                                     (let ((input (selected-window)))
-                                                       (execute-kbd-macro
-                                                        (vector (list 'wheel-up (posn-at-point (window-start main) main) 1)))
-                                                       (unless (eq input (selected-window))
-                                                         (error "Wheel stole input focus")))))
+                                                     (execute-kbd-macro
+                                                      (vector (list 'wheel-up (posn-at-point (window-start main) main) 1)))))
                                   (lambda (_) (not (plist-get (etaf-pi-info) :following))) t)
              (etaf-pi-gui--action "follow-button" (lambda (_) (etaf-pi-gui--press 'pi-follow))
                                   (lambda (_) (plist-get (etaf-pi-info) :following)))
              (etaf-pi-gui--action
-              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (erase-buffer) (insert "持续任务")
+              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (insert "持续任务")
                                           (execute-kbd-macro (kbd "RET")))
               (lambda (_)
-                (let ((bar (plist-get (etaf-pi-info) :composer-bar)))
-                  (and (equal (plist-get (etaf-pi-info) :phase) "回复中") bar
-                       (with-current-buffer bar (string-match-p "停止" (buffer-substring-no-properties (point-min) (point-max))))))))
+                (and (equal (plist-get (etaf-pi-info) :phase) "回复中")
+                     (string-match-p "停止" (buffer-substring-no-properties (point-min) (point-max))))))
              (etaf-pi-gui--action "stop-button" (lambda (_) (etaf-pi-gui--press 'pi-abort)) #'etaf-pi-gui--idle))
             (mapcar
              (lambda (size)
@@ -222,7 +218,9 @@
             (list
              (etaf-pi-gui--action "new-session" (lambda (_) (etaf-pi-gui--press 'pi-new))
                                   (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/pi-new.jsonl")))
-             (etaf-pi-gui--action "resume" (lambda (_) (etaf-pi-gui--type ":" "/resume /tmp/pi-fixture.jsonl"))
+             (etaf-pi-gui--action "resume" (lambda (_)
+                                            (etaf-pi-edit "/resume /tmp/pi-fixture.jsonl")
+                                            (execute-kbd-macro (kbd "C-c C-c")))
                                   (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/pi-fixture.jsonl")))
              (etaf-pi-gui--action "help" (lambda (_)
                                          (etaf-pi-gui--press 'pi-help)

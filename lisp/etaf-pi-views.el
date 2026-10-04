@@ -102,12 +102,114 @@
              nil))
 
 (defun etaf-pi--layout (width height)
-  "Resolve conversation geometry; native panes own navigation and input."
+  "Resolve conversation geometry; the composer is part of the same surface."
   (list :width width :height height :left 0 :right 0 :center (- width 2)
         :measure (min 92 (max 16 (- width 8)))))
 
-(defun etaf-pi--shell-view (title status lines layout navigation actions)
-  "Compose a quiet conversation header and its retained message stream."
+(defun etaf-pi--composer-controls (model thinking busy pending sending width actions)
+  "Return the composer's two-row control strip at WIDTH cells."
+  (let ((children
+         (list
+          (etaf-node
+           'etaf-button
+           (list :ref 'pi-model :id 'pi-model :on-press (plist-get actions :model)
+                 :disabled (or busy sending) :variant 'ghost :color (etaf-pi-color :muted)
+                 :bgcolor (etaf-pi-color :surface) :font-weight 'normal
+                 :padding '((lh 0) (ch 1)))
+           (list
+            (etaf-node 'flex (list :flex-direction 'row :align-items 'center :gap '((lh 0) (ch 1)))
+                       (list
+                        (etaf-node 'text nil
+                                   (list (truncate-string-to-width model (if (< width 70) 16 22) nil nil "…")))
+                        (etaf-node 'etaf-ui-icon
+                                   (list :name 'chevron-down :set 'svg :color (etaf-pi-color :muted))
+                                   nil)))))
+          (when (>= width 74)
+            (etaf-pi--control
+             (concat "思考 " (or (cdr (assoc thinking '(("off" . "标准") ("high" . "深入") ("max" . "最高"))))
+                             thinking))
+             'pi-thinking (plist-get actions :thinking) nil (or busy sending)))
+          (when (> pending 0)
+            (etaf-pi--control "待确认" 'pi-answer (plist-get actions :answer)))
+          (etaf-node 'box (list :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)) nil)
+          (when busy (etaf-pi--control "停止" 'pi-abort (plist-get actions :abort)))
+          (etaf-node
+           'etaf-button
+           (list :ref 'pi-send :id 'pi-send :on-press (plist-get actions :compose)
+                 :disabled sending :aria-label "发送消息"
+                 :help-echo "Enter 发送 · Shift+Enter 换行"
+                 :padding '((lh 0) (ch 1)) :font-weight 'normal
+                 :bgcolor (etaf-pi-color :accent) :color (etaf-pi-color :button-ink))
+           (list
+            (etaf-node 'etaf-ui-icon
+                       (list :name (if sending 'loading 'chevron-up) :set 'svg :lines 2 :min-width 3
+                             :color (etaf-pi-color :button-ink))
+                       nil))))))
+    (etaf-node 'flex
+               (list :width 'stretch :height '(lh 2) :flex-direction 'row
+                     :align-items 'center :gap '((lh 0) (ch 1)) :wrap-mode 'none)
+               (delq nil children))))
+
+(defun etaf-pi--composer-area (layout composer)
+  "Return the full-width composer panel with its centered field and controls.
+LAYOUT supplies :width, :height and :measure; COMPOSER supplies the draft
+binding, callbacks and the visible control state."
+  (let* ((width (plist-get layout :width))
+         (height (plist-get layout :height))
+         (measure (plist-get layout :measure))
+         (left (/ (- width 2 measure) 2)))
+    (etaf-node
+     'box
+     (list :position 'absolute :z-index 1
+           :left '(ch 0) :top (list 'lh (- height 5))
+           :width 'stretch :height '(lh 5)
+           :background-color (etaf-pi-color :surface) :wrap-mode 'none :overflow 'hidden)
+     (list
+      (etaf-node 'box
+                 (list :position 'absolute :left (list 'ch left) :top '(lh 0)
+                       :width (list 'ch (+ measure 1)) :height (list 'lh (or (plist-get composer :rows) 3))
+                       :overflow 'hidden)
+                 (list
+                  (etaf-node
+                   'etaf-text-input
+                   (list :ref 'pi-composer
+                         :bind (plist-get composer :draft)
+                         :label "消息" :hide-label t
+                         :rows (or (plist-get composer :rows) 3)
+                         :width 'stretch
+                         :placeholder (plist-get composer :placeholder)
+                         :submit-on-return t
+                         :completion-functions (plist-get composer :completion)
+                         :on-submit (plist-get composer :submit)
+                         :on-cancel (plist-get composer :cancel))
+                   nil)))
+      (etaf-node 'box
+                 (list :position 'absolute :left (list 'ch left) :top '(lh 3)
+                       :width (list 'ch (+ measure 1)) :height '(lh 2))
+                 (list (etaf-pi--composer-controls
+                        (plist-get composer :model)
+                        (plist-get composer :thinking)
+                        (plist-get composer :busy)
+                        (plist-get composer :pending)
+                        (plist-get composer :sending)
+                        (plist-get composer :width)
+                        (plist-get composer :actions))))))))
+
+(etaf-define-component etaf-pi-surface
+    (&key title status lines layout navigation composer actions)
+  "Root application surface; provides the app's catalog theme."
+  :setup (etaf-theme-provide (etaf-pi--theme-tokens))
+  :render (etaf-pi--surface-view title status lines layout navigation composer actions))
+
+(defun etaf-pi--shell-view (title status lines layout navigation composer actions)
+  "Compose a quiet conversation header, message stream and in-layout composer."
+  (etaf-node 'etaf-pi-surface
+             (list :title title :status status :lines lines :layout layout
+                   :navigation navigation :composer composer :actions actions)
+             nil))
+
+(defun etaf-pi--surface-view (title status lines layout navigation composer actions)
+  "Compose the app surface body under the catalog theme defaults."
   (let* ((width (plist-get layout :width)) (height (plist-get layout :height))
          (measure (plist-get layout :measure)) (left (/ (- width 2 measure) 2)))
     (etaf-view
@@ -127,7 +229,8 @@
             :width (list 'ch (+ measure 1)) :height (list 'lh (length lines))
             :background-color (etaf-pi-color :bg) :wrap-mode 'none :overflow 'hidden
          (text :id 'etaf-pi-transcript :ref 'etaf-pi-transcript :color (etaf-pi-color :ink)
-           (expr (mapconcat (lambda (line) (if (string-empty-p line) " " line)) lines "\n"))))))))
+           (expr (mapconcat (lambda (line) (if (string-empty-p line) " " line)) lines "\n"))))
+       (expr (etaf-pi--composer-area layout composer))))))
 
 (defun etaf-pi--sidebar-view (title height actions)
   "Render full-height conversation navigation, without dashboard cards."
@@ -149,33 +252,6 @@
            (text (expr (truncate-string-to-width title 14 nil nil "…"))))))
      (box :position 'absolute :z-index 0 :left '(ch 2) :top (list 'lh (- height 3)) :width '(ch 17)
        (expr (etaf-pi--control "帮助" 'pi-help (plist-get actions :help)))))))
-
-(defun etaf-pi--composer-view (model thinking busy pending sending width actions)
-  "Render selectors below native input, with send/stop on the trailing edge."
-  (etaf-view
-   (box :position 'relative :width 'stretch :height '(lh 2) :background-color (etaf-pi-color :surface)
-     (flex :position 'absolute :z-index 0 :left '(ch 1) :top '(lh 0)
-           :width (list 'ch (- width 4)) :height '(lh 2) :flex-direction 'row :align-items 'center
-           :gap '((lh 0) (ch 1))
-       (etaf-button :ref 'pi-model :id 'pi-model :on-press (plist-get actions :model)
-                    :disabled (or busy sending) :variant 'ghost :color (etaf-pi-color :muted)
-                    :bgcolor (etaf-pi-color :surface) :font-weight 'normal
-         (flex :flex-direction 'row :gap '((lh 0) (ch 1))
-           (text (expr (truncate-string-to-width model (if (< width 70) 16 22) nil nil "…")))
-           (etaf-ui-icon :name 'chevron-down :set 'svg :color (etaf-pi-color :muted))))
-       (expr (when (>= width 74)
-               (etaf-pi--control (concat "思考 " (or (cdr (assoc thinking '(("off" . "标准") ("high" . "深入") ("max" . "最高")))) thinking))
-                                'pi-thinking (plist-get actions :thinking) nil (or busy sending))))
-       (expr (when (> pending 0)
-               (etaf-pi--control "待确认" 'pi-answer (plist-get actions :answer))))
-       (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
-       (expr (when busy (etaf-pi--control "停止" 'pi-abort (plist-get actions :abort))))
-       (etaf-button :ref 'pi-compose :id 'pi-compose :on-press (plist-get actions :compose)
-                    :disabled sending :aria-label "发送消息" :help-echo "Enter 发送 · Shift+Enter 换行"
-                    :padding '((lh 0) (ch 1)) :font-weight 'normal
-                    :bgcolor (etaf-pi-color :accent) :color (etaf-pi-color :button-ink)
-         (etaf-ui-icon :name (if sending 'loading 'chevron-up) :set 'svg :lines 2 :min-width 3
-                       :color (etaf-pi-color :button-ink)))))))
 
 (provide 'etaf-pi-views)
 ;;; etaf-pi-views.el ends here

@@ -41,8 +41,9 @@
 ;; Return copied status, session, usage, queue and pending-dialog facts.
 ;; Function: etaf-pi-info ()
 ;; Return client facts and connection liveness without network I/O. :composer
-;; describes the native draft buffer name, character count, visibility and sending state.
-;; :navigation and :composer-bar name visible chrome buffers. :session-changing
+;; describes the in-layout field: its reference, whether a native editing
+;; session is active, the current text, any editor dialog and sending state.
+;; :navigation names the visible sidebar buffer. :session-changing
 ;; gates sends during a switch; :render-pending and :controls-phase describe
 ;; whether the visible controls have caught up with backend state.
 ;; Function: etaf-pi-send (text &optional behavior)
@@ -68,13 +69,8 @@
 ;; Answer the next dialog with VALUE, or CANCEL it. Interactive input asks the
 ;; user; noninteractive confirm requires a non-nil VALUE to approve.
 ;; Function: etaf-pi-edit (&optional text dialog)
-;; Open/reuse the native multiline pane for TEXT, below the transcript when
-;; space permits. DIALOG opens a separate confirmation editor, preserving drafts.
-;; Function: etaf-pi-editor-send ()
-;; Submit without leaving the draft pane. Clear unchanged text only after Pi
-;; acknowledges it; failures and edits made while awaiting the ack retain text.
-;; Function: etaf-pi-editor-cancel ()
-;; Return without sending and preserve a normal prompt as a draft.
+;; Focus the in-layout composer, optionally prefilled with TEXT. DIALOG marks a
+;; Pi editor request answered by the next submission.
 ;; Function: etaf-pi-page-up (&optional lines)
 ;; Browse older transcript lines without following incoming output. LINES defaults
 ;; to a viewport; the wheel passes three for smaller steps.
