@@ -17,6 +17,13 @@
   "Read-only application chrome."
   (setq-local mode-line-format nil header-line-format nil cursor-type nil)
   (setq-local truncate-lines t)
+  ;; The canvas owns every column it paints.  A sub-cell rounding
+  ;; remainder must not surface as Emacs's truncation glyph.
+  (setq-local buffer-display-table
+              (let ((table (copy-sequence (or standard-display-table
+                                              (make-display-table)))))
+                (set-display-table-slot table 'truncation ?\s)
+                table))
   (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
   (face-remap-set-base 'default (list :background (etaf-pi-color :surface) :foreground (etaf-pi-color :ink))))
 

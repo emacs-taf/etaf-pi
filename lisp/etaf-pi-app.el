@@ -616,6 +616,13 @@ Reuse its buffer unless NEW is non-nil.  Return the client buffer immediately."
               etaf-pi--draft (etaf-ref "")
               etaf-pi--actions (etaf-pi--make-actions buffer))
         (setq-local truncate-lines t mode-line-format nil)
+        ;; The canvas owns every column it paints.  A sub-cell rounding
+        ;; remainder must not surface as Emacs's truncation glyph.
+        (setq-local buffer-display-table
+                    (let ((table (copy-sequence (or standard-display-table
+                                                    (make-display-table)))))
+                      (set-display-table-slot table 'truncation ?\s)
+                      table))
         (setq-local scroll-margin 0 hscroll-margin 0)
         (setq-local cursor-type nil)
         (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
