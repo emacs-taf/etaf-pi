@@ -4,7 +4,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0"))
 ;; Keywords: tools, convenience
-;; URL: https://forgejo.vhkd.top/geekinney/etaf-pi
+;; URL: https://forgejo.vhkd.top/emacs-taf/etaf-pi
 ;;; Commentary:
 ;; Public API
 ;; Pi owns conversations, authentication, tools and persistence.  ETAF owns
