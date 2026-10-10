@@ -55,6 +55,8 @@ Incoming deltas only set dirty state. A single 80 ms timer coalesces them into a
 retained content batch. The transcript uses one Host rather than one per line to
 avoid repeated projection overhead. Nothing is scheduled while idle. Resize
 rebuilds layout, not conversation history. Scrolling stops auto-follow.
+Lines borrowed by an active minibuffer are not a resize: the committed rows
+keep the layout until the prompt closes.
 
 The composer is ETAF UI's `etaf-text-input` inside that surface: activation
 opens a native session over the field's published text in the conversation

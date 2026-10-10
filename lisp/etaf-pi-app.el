@@ -36,6 +36,9 @@
 (defvar-local etaf-pi--composer-dialog nil)
 (defvar-local etaf-pi--sending nil)
 (defvar-local etaf-pi--page-rows 20)
+(defvar-local etaf-pi--layout-rows nil
+  "Window body rows the current layout was committed for.
+Transient minibuffer space never shrinks it; the next real size updates it.")
 (defvar-local etaf-pi--layout-facts nil)
 (defvar-local etaf-pi--actions nil)
 (defvar-local etaf-pi--session-editing nil)
@@ -176,6 +179,15 @@
                     (when-let* ((window (get-buffer-window buffer t))) (select-window window))
                     (etaf-pi-follow)))))
 
+(defun etaf-pi--window-rows (window)
+  "Return the body height to lay the session out for in WINDOW.
+A minibuffer that borrows lines does not shrink the committed layout; the
+next real size is followed as usual."
+  (let ((current (window-body-height window)))
+    (unless (etaf-transient-space-borrowed-p window etaf-pi--layout-rows)
+      (setq etaf-pi--layout-rows current))
+    (or etaf-pi--layout-rows current)))
+
 (defun etaf-pi--paint (&optional rebuild)
   "Update visible chat content, composer and navigation chrome."
   (etaf-pi--ensure-navigation)
@@ -187,7 +199,7 @@
          (pending (length (etaf-pi--state-dialogs etaf-pi--state))))
     (when-let* ((window (get-buffer-window (current-buffer) t)))
       (let* ((width (max 28 (window-body-width window)))
-             (height (max 6 (window-body-height window)))
+             (height (max 6 (etaf-pi--window-rows window)))
              (layout (etaf-pi--layout width height)) (rows (max 1 (- height 9)))
              (all (etaf-pi--transcript (plist-get layout :measure)))
              (start (if etaf-pi--follow (max 0 (- (length all) rows))
