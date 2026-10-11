@@ -145,14 +145,14 @@
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
             (with-current-buffer owner
               (etaf-pi-edit)
-              (insert "未发送的草稿")
+              (execute-kbd-macro (vconcat "未发送的草稿"))
               (etaf-text-input-end t))
             (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
                            "未发送的草稿"))
             (with-current-buffer owner
               (etaf-pi-edit)
               (should (etaf-text-input-active-p (etaf-runtime-for-buffer owner)))
-              (insert "\n第二行")
+              (execute-kbd-macro (kbd "<S-return>")) (execute-kbd-macro (vconcat "第二行"))
               (etaf-text-input-end))
             (etaf-pi-test--wait
              (lambda ()
@@ -172,14 +172,14 @@
             (setq owner (etaf-pi-open temporary-file-directory t))
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
             (with-current-buffer owner
-              (etaf-pi-edit) (insert "拒绝发送") (etaf-text-input-end))
+              (etaf-pi-edit) (execute-kbd-macro (vconcat "拒绝发送")) (etaf-text-input-end))
             (etaf-pi-test--wait (lambda () (with-current-buffer owner (plist-get (etaf-pi-info) :error))))
             (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "拒绝发送"))
             (should-not (plist-get (plist-get (etaf-pi-info) :composer) :sending))
             ;; A delayed acknowledgement must not clear text edited meanwhile.
             (with-current-buffer owner
               (etaf-pi-edit "延迟接收") (etaf-text-input-end)
-              (etaf-pi-edit) (insert "\n继续编辑"))
+              (etaf-pi-edit) (execute-kbd-macro (kbd "<S-return>")) (execute-kbd-macro (vconcat "继续编辑")))
             (etaf-pi-test--wait
              (lambda () (not (plist-get (plist-get (etaf-pi-info) :composer) :sending))))
             (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
@@ -199,7 +199,7 @@
               (etaf-pi-edit "延迟接收")
               (etaf-text-input-end)
               (etaf-pi-edit)
-              (insert " changed"))
+              (execute-kbd-macro (vconcat " changed")))
             (etaf-pi-test--wait
              (lambda () (not (plist-get (plist-get (etaf-pi-info) :composer) :sending))))
             (with-current-buffer owner
@@ -218,7 +218,7 @@
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
             (with-current-buffer owner
               (etaf-pi-edit)
-              (insert "第一行") (execute-kbd-macro (kbd "<S-return>")) (insert "第二行")
+              (execute-kbd-macro (vconcat "第一行")) (execute-kbd-macro (kbd "<S-return>")) (execute-kbd-macro (vconcat "第二行"))
               (should (equal (plist-get (plist-get (etaf-pi-info) :composer) :text)
                              "第一行\n第二行"))
               (execute-kbd-macro (kbd "RET")))

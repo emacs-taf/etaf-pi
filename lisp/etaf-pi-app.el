@@ -571,7 +571,7 @@ DIALOG marks a Pi editor request answered by the next submission."
                     ("j" . etaf-pi-page-down) ("k" . etaf-pi-page-up)
                     ("<next>" . etaf-pi-page-down) ("<prior>" . etaf-pi-page-up)
                     ("t" . etaf-pi-show-tools) ("R" . etaf-pi-reconnect)
-                    ("?" . etaf-pi-help) ("q" . etaf-pi-close)))
+                    ("C-c h" . etaf-pi-help) ("q" . etaf-pi-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
     (define-key map [wheel-up] (lambda (event) (interactive (list last-input-event)) (etaf-pi--wheel event -3)))
     (define-key map [wheel-down] (lambda (event) (interactive (list last-input-event)) (etaf-pi--wheel event 3)))
