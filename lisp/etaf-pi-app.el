@@ -497,6 +497,13 @@ DIALOG marks a Pi editor request answered by the next submission."
   (when (>= (+ etaf-pi--offset etaf-pi--page-rows) etaf-pi--total-lines)
     (setq etaf-pi--follow t))
   (etaf-pi--paint))
+
+(defun etaf-pi--direction (direction)
+  "Scroll the transcript with DIRECTION and return the result symbol."
+  (pcase direction
+    ('down (etaf-pi-page-down) 'handled)
+    ('up (etaf-pi-page-up) 'handled)
+    (_ 'release)))
 (defun etaf-pi-follow () "Follow the latest output." (interactive) (setq etaf-pi--follow t) (etaf-pi--paint))
 
 (defun etaf-pi-show-tools ()
@@ -520,7 +527,7 @@ DIALOG marks a Pi editor request answered by the next submission."
   "Show native-client commands and RPC compatibility limits."
   (interactive)
   (with-help-window "*Pi 帮助*"
-    (princ "ETAF Pi\n\ni / e  底部输入区原地编辑；Enter 发送，Shift+Enter / C-j 换行\nEsc / C-c C-k  收起输入区并保留草稿（确认框则取消它）\n:  快速命令（TAB 补全）\nM-TAB  在输入区补全 Slash 命令\na  回答待处理确认；C-g 取消而非批准\nC-c C-k  停止并收回队列（输入区未激活时）\nj/k 或 PageDown/PageUp  翻阅历史\ng  跟随最新回复\nt  完整工具输出\nm  模型   T  思考级别\nn  新会话   r  恢复会话   R  断线重连\nq  关闭当前客户端\n\n/new /resume /model /thinking /abort /compact /quit /help\nSkills、模板和扩展命令经 Pi 的 get_commands 发现。\nRPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。\n会话、认证和技能由原来的 Pi 管理。\n")))
+    (princ "ETAF Pi\n\ni / e  底部输入区原地编辑；Enter 发送，Shift+Enter / C-j 换行\nEsc / C-c C-k  收起输入区并保留草稿（确认框则取消它）\n:  快速命令（TAB 补全）\nM-TAB  在输入区补全 Slash 命令\na  回答待处理确认；C-g 取消而非批准\nC-c C-k  停止并收回队列（输入区未激活时）\n↑/↓ 或 PageDown/PageUp  翻阅历史\ng  跟随最新回复\nt  完整工具输出\nm  模型   T  思考级别\nn  新会话   r  恢复会话   R  断线重连\nq  关闭当前客户端\n\n/new /resume /model /thinking /abort /compact /quit /help\nSkills、模板和扩展命令经 Pi 的 get_commands 发现。\nRPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。\n会话、认证和技能由原来的 Pi 管理。\n")))
 
 (defun etaf-pi-reconnect ()
   "Reconnect a stopped backend, resuming the last known saved session."
@@ -568,7 +575,7 @@ DIALOG marks a Pi editor request answered by the next submission."
     (dolist (pair '(("i" . etaf-pi-edit) ("e" . etaf-pi-edit) (":" . etaf-pi-compose) ("a" . etaf-pi-answer)
                     ("C-c C-k" . etaf-pi-abort) ("m" . etaf-pi-select-model) ("T" . etaf-pi-select-thinking)
                     ("n" . etaf-pi-new-session) ("r" . etaf-pi-resume) ("g" . etaf-pi-follow)
-                    ("j" . etaf-pi-page-down) ("k" . etaf-pi-page-up)
+                    
                     ("<next>" . etaf-pi-page-down) ("<prior>" . etaf-pi-page-up)
                     ("t" . etaf-pi-show-tools) ("R" . etaf-pi-reconnect)
                     ("C-c h" . etaf-pi-help) ("q" . etaf-pi-close)))

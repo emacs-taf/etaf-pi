@@ -208,12 +208,15 @@ binding, callbacks and the visible control state."
                    :navigation navigation :composer composer :actions actions)
              nil))
 
+(declare-function etaf-pi--direction "etaf-pi-app" (direction))
+
 (defun etaf-pi--surface-view (title status lines layout navigation composer actions)
   "Compose the app surface body under the catalog theme defaults."
   (let* ((width (plist-get layout :width)) (height (plist-get layout :height))
          (measure (plist-get layout :measure)) (left (/ (- width 2 measure) 2)))
     (etaf-view
      (box :position 'relative :width 'stretch :height (list 'lh height) :background-color (etaf-pi-color :bg)
+         :on-direction #'etaf-pi--direction
        (column :position 'absolute :z-index 0 :left '(ch 2) :top '(lh 1)
                :width (list 'ch (- width 6)) :height '(lh 2)
          (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
