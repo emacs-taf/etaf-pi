@@ -27,6 +27,7 @@
 (defvar-local etaf-pi--paint-timer nil)
 (defvar-local etaf-pi--painted nil)
 (defvar-local etaf-pi--shape nil)
+(defvar-local etaf-pi--palette-painted nil)
 (defvar-local etaf-pi--line-cache nil)
 (defvar-local etaf-pi--follow t)
 (defvar-local etaf-pi--offset 0)
@@ -113,6 +114,18 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
   (etaf-pi--request "get_session_stats")
   (etaf-pi--request "get_messages"))
 
+(defun etaf-pi--refresh-theme (&optional _theme)
+  "Repaint open clients after the Emacs theme or its color mode changes."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and etaf-pi--state (get-buffer-window buffer t))
+        (clrhash etaf-pi--line-cache)
+        (setq etaf-pi--navigation-painted nil)
+        (etaf-pi--paint t)))))
+
+(when (boundp 'enable-theme-functions)
+  (add-hook 'enable-theme-functions #'etaf-pi--refresh-theme))
+
 (defun etaf-pi--summary (width)
   "Build the status line at WIDTH cells."
   (let* ((state etaf-pi--state)
@@ -147,8 +160,18 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
                                         (if (equal (plist-get tool :type) "tool_execution_end") "完成" "执行中")) width))))
     (when (null lines)
       (setq lines
-            (append (list "" "" (etaf-pi--ink "有什么可以帮你？" :ink nil t) "")
-                    (etaf-pi--wrap "描述任务，或粘贴需要一起处理的代码。" width))))
+            (append (list "" "")
+                    (list (etaf-pi--center (etaf-pi--ink "◆  Pi" :accent nil t) width))
+                    (list "")
+                    (list (etaf-pi--center (etaf-pi--ink "有什么可以帮你？" :ink nil t) width))
+                    (list "")
+                    (list (etaf-pi--center (etaf-pi--ink "描述任务，或粘贴需要一起处理的代码。" :muted) width))
+                    (list "")
+                    (list (etaf-pi--center
+                           (concat (etaf-pi--ink " 解释这段代码 " :ink :surface-2)
+                                   "  " (etaf-pi--ink " 跑一遍测试 " :ink :surface-2)
+                                   "  " (etaf-pi--ink " 总结今天的改动 " :ink :surface-2))
+                           width)))))
     (dolist (notice (list (etaf-pi--state-error etaf-pi--state)
                            (etaf-pi--state-notice etaf-pi--state)))
       (when (and notice (not (string-empty-p notice)))
@@ -200,7 +223,7 @@ next real size is followed as usual."
     (when-let* ((window (get-buffer-window (current-buffer) t)))
       (let* ((width (max 28 (window-body-width window)))
              (height (max 6 (etaf-pi--window-rows window)))
-             (layout (etaf-pi--layout width height)) (rows (max 1 (- height 9)))
+             (layout (etaf-pi--layout width height)) (rows (max 1 (- height 10)))
              (all (etaf-pi--transcript (plist-get layout :measure)))
              (start (if etaf-pi--follow (max 0 (- (length all) rows))
                       (min etaf-pi--offset (max 0 (- (length all) rows)))))
@@ -222,6 +245,7 @@ next real size is followed as usual."
                              busy pending etaf-pi--sending))
              (rebuildp (or rebuild (null runtime)
                            (not (equal etaf-pi--shape (list width height)))
+                           (not (equal (etaf-pi--palette-mode) etaf-pi--palette-painted))
                            (not (equal controls etaf-pi--controls-painted))))
              (editing (and runtime (etaf-text-input-active-p runtime))))
         (setq etaf-pi--layout-facts layout etaf-pi--offset start
@@ -240,6 +264,7 @@ next real size is followed as usual."
                                            navigation composer etaf-pi--actions)
                       (list :viewport-height height))
           (setq etaf-pi--shape (list width height)
+                etaf-pi--palette-painted (etaf-pi--palette-mode)
                 etaf-pi--controls-painted controls))
          (t
           (let (updates)

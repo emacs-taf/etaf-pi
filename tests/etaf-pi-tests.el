@@ -116,7 +116,7 @@
             (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
             (etaf-pi-send "你好")
             (etaf-pi-test--wait (lambda () (and (equal (plist-get (etaf-pi-info) :phase) "就绪")
-                                               (string-match-p "工具 · read" (buffer-substring-no-properties (point-min) (point-max))))))
+                                               (string-match-p "✔ read" (buffer-substring-no-properties (point-min) (point-max))))))
             (etaf-pi-select-model "fixture/alternate")
             (etaf-pi-test--wait (lambda () (equal (plist-get (plist-get (plist-get (etaf-pi-info) :session) :model) :id) "alternate")))
             (etaf-pi-select-thinking "high")
@@ -159,7 +159,7 @@
                (and (equal (plist-get (etaf-pi-info) :phase) "就绪")
                     (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")
                     (with-current-buffer owner
-                      (string-match-p "工具 · read"
+                      (string-match-p "✔ read"
                                       (buffer-substring-no-properties (point-min) (point-max)))))))
         (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close))))))))
 

@@ -23,9 +23,18 @@
 (defun etaf-pi--ink (text color &optional background bold)
   "Give TEXT semantic COLOR, optional BACKGROUND and BOLD emphasis."
   (propertize text 'face
-              (append (list :foreground (etaf-pi-color color))
+              (append (when color (list :foreground (etaf-pi-color color)))
                       (when background (list :background (etaf-pi-color background)))
                       (when bold (list :weight 'bold)))))
+
+(defun etaf-pi--mark (glyph color)
+  "Return GLYPH painted with COLOR for role marks and tool status."
+  (etaf-pi--ink glyph color nil t))
+
+(defun etaf-pi--center (text width)
+  "Return TEXT centered inside WIDTH display cells."
+  (let ((pad (max 0 (/ (- width (string-width text)) 2))))
+    (concat (make-string pad ?\s) text)))
 
 (defun etaf-pi--surface-line (text width color background &optional bold)
   "Pad TEXT to WIDTH using semantic COLOR and BACKGROUND."
@@ -33,30 +42,37 @@
                 color background bold))
 
 (defun etaf-pi--markdown-lines (text width)
-  "Render headings, emphasis, inline code and fenced code from TEXT at WIDTH."
+  "Render headings, emphasis, inline code and fenced code from TEXT at WIDTH.
+Fenced code becomes a labeled card on the code surface; headings take the
+accent color, list bullets become dots and quotes take an accent rule."
   (let (code result)
     (dolist (line (split-string text "\n" nil))
       (cond
        ((string-match "\\`[ \t]*```\\(.*\\)" line)
         (setq code (not code))
-        (push (etaf-pi--surface-line
-               (if code (let ((lang (string-trim (match-string 1 line))))
-                          (if (string-empty-p lang) "代码" lang)) "")
-               width :muted :surface-2) result))
+        (if code
+            (let ((lang (string-trim (match-string 1 line))))
+              (push (etaf-pi--surface-line (concat " " (if (string-empty-p lang) "代码" lang) " ")
+                                           width :muted :code-bg) result))
+          (push (etaf-pi--surface-line " " width nil :code-bg) result)))
        (code
         (dolist (part (etaf-pi--wrap line (- width 4)))
-          (push (etaf-pi--surface-line part width :ink :surface-2) result)))
+          (push (etaf-pi--surface-line part width :ink :code-bg) result)))
        (t
-        (let ((heading (string-match "\\`#+ +" line)))
+        (let* ((heading (string-match "\\`#+ +" line))
+               (bullet (string-match "\\`[ \t]*[-*] +" line))
+               (quote (string-match "\\`[ \t]*> ?" line)))
           (when heading (setq line (substring line (match-end 0))))
+          (when bullet (setq line (concat "•  " (substring line (match-end 0)))))
+          (when quote (setq line (concat (etaf-pi--ink "▏ " :accent) (substring line (match-end 0)))))
           (setq line (replace-regexp-in-string
                       "\\*\\*\\([^*\n]+\\)\\*\\*"
-                      (lambda (match) (propertize (substring match 2 -2) 'face 'bold)) line t t))
+                      (lambda (match) (etaf-pi--ink (substring match 2 -2) :ink nil t)) line t t))
           (setq line (replace-regexp-in-string
                       "`\\([^`\n]+\\)`"
-                      (lambda (match) (etaf-pi--ink (substring match 1 -1) :accent :surface-2)) line t t))
+                      (lambda (match) (etaf-pi--ink (substring match 1 -1) :accent :accent-soft)) line t t))
           (dolist (part (etaf-pi--wrap line width))
-            (push (if heading (etaf-pi--ink part :ink nil t) part) result))))))
+            (push (if heading (etaf-pi--ink part :accent nil t) part) result))))))
     (nreverse result)))
 
 (defun etaf-pi--message-lines (message width)
@@ -66,38 +82,50 @@
          (pending (equal (plist-get message :stopReason) "pending")))
     (pcase role
       ("user"
-       (let* ((bubble (min (- width 2) (max 20 (min (floor (* width .82)) (+ 4 (string-width text))))))
-              (inset (make-string (- width bubble) ?\s)))
+       (let* ((measure (min width (max 24 (min (floor (* width .82)) (+ 6 (string-width text))))))
+              (inset (make-string (- width measure) ?\s)))
          (append (list "")
-                 (mapcar (lambda (line)
-                           (concat inset (etaf-pi--surface-line line bubble :ink :accent-soft)))
-                         (etaf-pi--wrap text (- bubble 4))) (list "" ""))))
+                 (list (concat inset (etaf-pi--ink (make-string measure ?\s) nil :user-bg)))
+                 (mapcar (lambda (line) (concat inset (etaf-pi--surface-line line measure :ink :user-bg)))
+                         (etaf-pi--wrap text (- measure 4)))
+                 (list (concat inset (etaf-pi--ink (make-string measure ?\s) nil :user-bg)))
+                 (list ""))))
       ("assistant"
        (unless (and (not pending) (string-empty-p (string-trim text)))
-         (append (list (etaf-pi--ink (if pending "Pi · 正在回复" "Pi") :accent nil t) "")
-                 (if (string-empty-p (string-trim text)) (list (etaf-pi--ink "正在思考…" :muted))
-                   (etaf-pi--markdown-lines text width)) (list "" ""))))
+         (append (list (concat (etaf-pi--mark "◆ " :accent)
+                               (etaf-pi--ink (if pending "Pi · 正在回复" "Pi") :accent nil t))
+                       "")
+                 (if (string-empty-p (string-trim text))
+                     (list (etaf-pi--ink "正在思考…" :muted) "")
+                   (append (etaf-pi--markdown-lines text width) (list ""))))))
       ("toolResult"
-       (list (etaf-pi--ink
-              (truncate-string-to-width
-               (format "工具 · %s · %s" (plist-get message :toolName)
-                       (if (eq (plist-get message :isError) t) "失败" "完成")) width)
-              (if (eq (plist-get message :isError) t) :error :muted))
-             (etaf-pi--ink (truncate-string-to-width
-                            (concat "  " (or (car (split-string text "\n")) "")) width nil nil "…") :muted) ""))
+       (let ((summary (string-trim (or (car (split-string text "\n")) ""))))
+         (list (concat (if (eq (plist-get message :isError) t)
+                           (etaf-pi--mark "✘ " :error) (etaf-pi--mark "✔ " :ok))
+                       (etaf-pi--ink (or (plist-get message :toolName) "工具") :ink nil t)
+                       "  "
+                       (etaf-pi--ink (if (eq (plist-get message :isError) t) "失败" "完成") :muted)
+                       (if (string-empty-p summary) ""
+                         (concat "   " (etaf-pi--ink
+                                        (truncate-string-to-width
+                                         summary (max 8 (- width 34)) nil nil "…")
+                                        :muted))))
+               "")))
       ((or "compactionSummary" "branchSummary")
-       (append (list (etaf-pi--ink "上下文摘要" :muted))
+       (append (list (etaf-pi--ink "◦ 上下文摘要" :muted) "")
                (etaf-pi--wrap (or (plist-get message :summary) "") width) (list "")))
       ("custom" (unless (eq (plist-get message :display) :false)
                   (append (etaf-pi--wrap text width) (list "")))))))
 
-(defun etaf-pi--control (label ref action &optional primary disabled)
-  "Compose a catalog button LABEL at REF."
+(defun etaf-pi--control (label ref action &optional primary disabled background)
+  "Compose a catalog button LABEL at REF.
+PRIMARY paints it with the accent, DISABLED blocks it and BACKGROUND overrides
+the ghost surface for chips."
   (etaf-node 'etaf-button
              (list :label label :id ref :ref ref :on-press action :disabled disabled
                    :variant (if primary 'primary 'ghost)
-                   :color (etaf-pi-color (if primary :button-ink :muted))
-                   :bgcolor (etaf-pi-color (if primary :accent :surface))
+                   :color (etaf-pi-color (if primary :button-ink :ink))
+                   :bgcolor (etaf-pi-color (or background (if primary :accent :surface)))
                    :padding '((lh 0) (ch 1)) :font-weight 'normal)
              nil))
 
@@ -113,8 +141,8 @@
           (etaf-node
            'etaf-button
            (list :ref 'pi-model :id 'pi-model :on-press (plist-get actions :model)
-                 :disabled (or busy sending) :variant 'ghost :color (etaf-pi-color :muted)
-                 :bgcolor (etaf-pi-color :surface) :font-weight 'normal
+                 :disabled (or busy sending) :variant 'ghost :color (etaf-pi-color :ink)
+                 :bgcolor (etaf-pi-color :surface-2) :font-weight 'normal
                  :padding '((lh 0) (ch 1)))
            (list
             (etaf-node 'flex (list :flex-direction 'row :align-items 'center :gap '((lh 0) (ch 1)))
@@ -128,7 +156,7 @@
             (etaf-pi--control
              (concat "思考 " (or (cdr (assoc thinking '(("off" . "标准") ("high" . "深入") ("max" . "最高"))))
                              thinking))
-             'pi-thinking (plist-get actions :thinking) nil (or busy sending)))
+             'pi-thinking (plist-get actions :thinking) nil (or busy sending) :surface-2))
           (when (> pending 0)
             (etaf-pi--control "待确认" 'pi-answer (plist-get actions :answer)))
           (etaf-node 'box (list :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)) nil)
@@ -161,12 +189,15 @@ binding, callbacks and the visible control state."
     (etaf-node
      'box
      (list :position 'absolute :z-index 1
-           :left '(ch 0) :top (list 'lh (- height 5))
-           :width 'stretch :height '(lh 5)
-           :background-color (etaf-pi-color :surface) :wrap-mode 'none :overflow 'hidden)
+           :left '(ch 0) :top (list 'lh (- height 6))
+           :width 'stretch :height '(lh 6)
+           :background-color (etaf-pi-color :surface)
+           :border-top-width (list 'px 1) :border-top-style 'solid
+           :border-top-color (etaf-pi-color :border)
+           :wrap-mode 'none :overflow 'hidden)
      (list
       (etaf-node 'box
-                 (list :position 'absolute :left (list 'ch left) :top '(lh 0)
+                 (list :position 'absolute :left (list 'ch left) :top '(lh 1)
                        :width (list 'ch (+ measure 1)) :height (list 'lh (or (plist-get composer :rows) 3))
                        :overflow 'hidden)
                  (list
@@ -184,7 +215,7 @@ binding, callbacks and the visible control state."
                          :on-cancel (plist-get composer :cancel))
                    nil)))
       (etaf-node 'box
-                 (list :position 'absolute :left (list 'ch left) :top '(lh 3)
+                 (list :position 'absolute :left (list 'ch left) :top '(lh 4)
                        :width (list 'ch (+ measure 1)) :height '(lh 2))
                  (list (etaf-pi--composer-controls
                         (plist-get composer :model)
@@ -217,17 +248,22 @@ binding, callbacks and the visible control state."
     (etaf-view
      (box :position 'relative :width 'stretch :height (list 'lh height) :background-color (etaf-pi-color :bg)
          :on-direction #'etaf-pi--direction
-       (column :position 'absolute :z-index 0 :left '(ch 2) :top '(lh 1)
-               :width (list 'ch (- width 6)) :height '(lh 2)
-         (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
-           (box :flex-grow 1 :flex-basis '(ch 0) :height '(lh 1) :wrap-mode 'none :overflow 'hidden
-             (text :color (etaf-pi-color :ink) :font-weight 'bold
-               (expr (truncate-string-to-width title (max 8 (- width 32)) nil nil "…"))))
-           (expr (unless navigation (etaf-pi--control "新对话" 'pi-new (plist-get actions :new))))
-           (expr (etaf-pi--control "工具" 'pi-tools (plist-get actions :tools)))
-           (expr (unless navigation (etaf-pi--control "历史" 'pi-resume (plist-get actions :resume)))))
-         (box :width 'stretch :height '(lh 1) :wrap-mode 'none
-           (text :ref 'etaf-pi-status :id 'etaf-pi-status :color (etaf-pi-color :muted) (expr status))))
+       (box :position 'absolute :z-index 1 :left '(ch 0) :top '(lh 0)
+            :width 'stretch :height '(lh 3)
+            :background-color (etaf-pi-color :surface)
+            :border-bottom-width (list 'px 1) :border-bottom-style 'solid
+            :border-bottom-color (etaf-pi-color :border)
+         (column :position 'absolute :left '(ch 2) :top '(lh 1)
+                 :width (list 'ch (- width 6)) :height '(lh 2)
+           (flex :flex-direction 'row :width 'stretch :gap '((lh 0) (ch 1))
+             (box :flex-grow 1 :flex-basis '(ch 0) :height '(lh 1) :wrap-mode 'none :overflow 'hidden
+               (text :color (etaf-pi-color :ink) :font-weight 'bold
+                 (expr (truncate-string-to-width title (max 8 (- width 32)) nil nil "…"))))
+             (expr (unless navigation (etaf-pi--control "新对话" 'pi-new (plist-get actions :new))))
+             (expr (etaf-pi--control "工具" 'pi-tools (plist-get actions :tools)))
+             (expr (unless navigation (etaf-pi--control "历史" 'pi-resume (plist-get actions :resume)))))
+           (box :width 'stretch :height '(lh 1) :wrap-mode 'none
+             (text :ref 'etaf-pi-status :id 'etaf-pi-status :color (etaf-pi-color :muted) (expr status)))))
        (box :position 'absolute :z-index 0 :left (list 'ch left) :top '(lh 4)
             :width (list 'ch (+ measure 1)) :height (list 'lh (length lines))
             :background-color (etaf-pi-color :bg) :wrap-mode 'none :overflow 'hidden
