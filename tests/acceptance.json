@@ -4,6 +4,11 @@
   "support": [],
   "cases": [
     {
+      "name": "etaf-pi-test-help-stays-in-client",
+      "file": "tests/etaf-pi-tests.el",
+      "purpose": "Native help keys, the public command and /help share a searchable in-buffer modal, preserve the draft and restore focus after layered Escape."
+    },
+    {
       "name": "etaf-pi-test-acknowledgement-preserves-active-edit",
       "file": "tests/etaf-pi-tests.el",
       "purpose": "A delayed prompt acceptance leaves an active in-place editing session and its text untouched."

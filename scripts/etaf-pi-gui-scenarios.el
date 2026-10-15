@@ -222,11 +222,26 @@ transient pixel metrics are exempt from the published-canvas checks."
                                             (etaf-pi-edit "/resume /tmp/pi-fixture.jsonl")
                                             (execute-kbd-macro (kbd "C-c C-c")))
                                   (lambda (_) (equal (plist-get (plist-get (etaf-pi-info) :session) :sessionFile) "/tmp/pi-fixture.jsonl")))
-             (etaf-pi-gui--action "help" (lambda (_)
-                                         (etaf-pi-gui--press 'pi-help)
-                                         (when-let* ((window (get-buffer-window "*Pi 帮助*" t)))
-                                           (select-window window) (execute-kbd-macro (kbd "q")))
-                                         (etaf-pi-gui--main)))))
+             (etaf-pi-gui--action
+              "help" (lambda (_)
+                       (let ((windows (window-list)))
+                         (etaf-pi-gui--press 'pi-help)
+                         (unless (and (eq (window-buffer) etaf-pi-gui--buffer)
+                                      (equal windows (window-list))
+                                      (string-match-p
+                                       "快捷键 · 只读"
+                                       (buffer-substring-no-properties (point-min) (point-max))))
+                           (error "Help left the client surface"))
+                         (execute-kbd-macro (kbd "/"))
+                         (execute-kbd-macro "?")
+                         (execute-kbd-macro (kbd "<escape>"))
+                         (unless (string-match-p
+                                  "快捷键 · 只读"
+                                  (buffer-substring-no-properties (point-min) (point-max)))
+                           (error "Search Escape closed two layers"))
+                         (execute-kbd-macro (kbd "<escape>"))
+                         (when (etaf-help-close)
+                           (error "Help did not close")))))))
            :completion (lambda (_) (with-current-buffer etaf-pi-gui--buffer
                                       (not (plist-get (etaf-pi-info) :error)))))))
     (unwind-protect

@@ -160,8 +160,8 @@
                     (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")
                     (with-current-buffer owner
                       (string-match-p "✔ read"
-                                      (buffer-substring-no-properties (point-min) (point-max)))))))
-        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close))))))))
+                                      (buffer-substring-no-properties (point-min) (point-max))))))))
+        (when (buffer-live-p owner) (with-current-buffer owner (etaf-pi-close)))))))
 
 (ert-deftest etaf-pi-test-draft-failure-and-concurrent-edit ()
   "Failed sends and text edited before the ack are never discarded."
@@ -275,6 +275,81 @@
           (etaf-pi-test--wait (lambda () (= (length order) 3)))
           (should (equal order '(1 2 echo))))
       (when connection (etaf-pi-rpc-close connection)))))
+
+(ert-deftest etaf-pi-test-help-stays-in-client ()
+  "Keys, the public command and Slash help share the current read-only modal."
+  (save-window-excursion
+    (let ((etaf-pi-command etaf-pi-test--command) buffer)
+      (unwind-protect
+          (progn
+            (setq buffer (etaf-pi-open temporary-file-directory t))
+            (with-current-buffer buffer
+              (etaf-pi-test--wait
+               (lambda () (and (equal (plist-get (etaf-pi-info) :phase) "就绪")
+                               (not (plist-get (etaf-pi-info) :render-pending)))))
+              (let* ((runtime (etaf-runtime-for-buffer buffer))
+                     (windows (window-list)))
+                (etaf-focus-next runtime)
+                (let ((focus (etaf-focused-host-ref runtime)))
+                  (dolist (open (list (lambda () (execute-kbd-macro (kbd "?")))
+                                     (lambda () (execute-kbd-macro (kbd "C-c h")))
+                                     #'etaf-pi-help
+                                     (lambda () (etaf-pi-send "/help"))))
+                    (funcall open)
+                    (let* ((data (etaf-help-data runtime))
+                           (entries (apply #'append
+                                           (mapcar (lambda (group) (plist-get group :entries))
+                                                   (plist-get data :groups))))
+                           (model (cl-find "m" entries :test #'equal
+                                           :key (lambda (entry) (plist-get entry :key))))
+                           (same-runtime (eq runtime (etaf-runtime-for-buffer buffer))))
+                      (should same-runtime)
+                      (should (eq (window-buffer) buffer))
+                      (should (equal windows (window-list)))
+                      (should (equal (plist-get data :title) "Pi 客户端"))
+                      (should (equal (plist-get model :label) "选择模型"))
+                      (should (seq-some (lambda (note) (string-match-p "RPC" note))
+                                        (plist-get data :notes))))
+                    (execute-kbd-macro (kbd "/"))
+                    (execute-kbd-macro "?")
+                    (execute-kbd-macro (kbd "<escape>"))
+                    (let ((editing (etaf-text-input-active-p runtime)))
+                      (should-not editing))
+                    (should (string-match-p "快捷键 · 只读"
+                                            (buffer-substring-no-properties (point-min) (point-max))))
+                    (execute-kbd-macro (kbd "<escape>"))
+                    (let ((restored (equal focus (etaf-focused-host-ref runtime)))
+                          (phase (plist-get (etaf-pi-info) :phase)))
+                      (should restored)
+                      (should (equal phase "就绪")))))
+                ;; Wide clients already have a separate navigation surface.
+                ;; Its help button must target the conversation, not that pane.
+                (when-let* ((name (plist-get (etaf-pi-info) :navigation))
+                            (navigation (get-buffer name)))
+                  (let* ((nav-runtime (etaf-runtime-for-buffer navigation))
+                         (control (cl-find-if
+                                   (lambda (entry)
+                                     (equal (plist-get (cdr entry) :aria-label) "帮助"))
+                                   (etaf-runtime-host-props-entries nav-runtime))))
+                    (let ((found (and control t))) (should found))
+                    (select-window (get-buffer-window navigation))
+                    (with-current-buffer navigation
+                      (etaf-focus nav-runtime (car control))
+                      (execute-kbd-macro (kbd "RET")))
+                    (should (eq (window-buffer) buffer))
+                    (let ((closed (etaf-help-close runtime))
+                          (wrong-surface (etaf-help-close nav-runtime)))
+                      (should closed)
+                      (should-not wrong-surface))))
+                ;; Opening from an active composer ends editing, not its draft.
+                (with-current-buffer buffer
+                  (etaf-pi-edit "保留草稿")
+                  (etaf-pi-help)
+                  (etaf-help-close runtime)
+                  (let ((text (plist-get (plist-get (etaf-pi-info) :composer) :text)))
+                    (should (equal text "保留草稿")))))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (etaf-pi-close)))))))
 
 (provide 'etaf-pi-tests)
 ;;; etaf-pi-tests.el ends here

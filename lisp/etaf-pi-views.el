@@ -247,7 +247,12 @@ binding, callbacks and the visible control state."
          (measure (plist-get layout :measure)) (left (/ (- width 2 measure) 2)))
     (etaf-view
      (box :position 'relative :width 'stretch :height (list 'lh height) :background-color (etaf-pi-color :bg)
-         :on-direction #'etaf-pi--direction
+         :on-direction #'etaf-pi--direction :aria-label "Pi 客户端"
+         :help '("Slash 命令：/new /resume /model /thinking /abort /compact /quit /help。"
+                 "Skills、模板和扩展命令由 Pi 的 get_commands 发现，输入区支持补全。"
+                 "RPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。"
+                 "会话、认证和技能由 Pi 管理；不要同时从终端和客户端写同一会话。"
+                 "任务运行时的新消息进入待发队列；查看帮助不会发送消息或批准请求。")
        (box :position 'absolute :z-index 1 :left '(ch 0) :top '(lh 0)
             :width 'stretch :height '(lh 3)
             :background-color (etaf-pi-color :surface)

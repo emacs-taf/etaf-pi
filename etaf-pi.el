@@ -81,7 +81,10 @@
 ;; Function: etaf-pi-show-tools ()
 ;; Open full authoritative tool output in a native read-only buffer.
 ;; Function: etaf-pi-help ()
-;; Display keyboard bindings and RPC limitations.
+;; Display read-only keyboard help and RPC limitations in the current client.
+;; Return its buffer, without opening another buffer or splitting a window.
+;; Escape or an outside click closes help and restores the opening focus.
+;; Requires a mounted Pi client; viewing does not send prompts or approvals.
 ;; Variable: etaf-pi-command
 ;; Child argv. Default is ("pi" "--mode" "rpc"); may be dynamically bound for
 ;; offline protocol peers. Pi loads normal user resources unless flags say otherwise.

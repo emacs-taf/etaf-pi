@@ -196,7 +196,7 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
         :new (lambda () (with-current-buffer buffer (etaf-pi-new-session)))
         :resume (lambda () (with-current-buffer buffer (call-interactively #'etaf-pi-resume)))
         :tools (lambda () (with-current-buffer buffer (etaf-pi-show-tools)))
-        :help #'etaf-pi-help
+        :help (lambda () (with-current-buffer buffer (etaf-pi-help)))
         :follow (lambda ()
                   (with-current-buffer buffer
                     (when-let* ((window (get-buffer-window buffer t))) (select-window window))
@@ -549,10 +549,13 @@ DIALOG marks a Pi editor request answered by the next submission."
       (pop-to-buffer buffer))))
 
 (defun etaf-pi-help ()
-  "Show native-client commands and RPC compatibility limits."
+  "Show read-only command help inside the current Pi client buffer.
+Return the client buffer; no separate help buffer or window is created."
   (interactive)
-  (with-help-window "*Pi 帮助*"
-    (princ "ETAF Pi\n\ni / e  底部输入区原地编辑；Enter 发送，Shift+Enter / C-j 换行\nEsc / C-c C-k  收起输入区并保留草稿（确认框则取消它）\n:  快速命令（TAB 补全）\nM-TAB  在输入区补全 Slash 命令\na  回答待处理确认；C-g 取消而非批准\nC-c C-k  停止并收回队列（输入区未激活时）\n↑/↓ 或 PageDown/PageUp  翻阅历史\ng  跟随最新回复\nt  完整工具输出\nm  模型   T  思考级别\nn  新会话   r  恢复会话   R  断线重连\nq  关闭当前客户端\n\n/new /resume /model /thinking /abort /compact /quit /help\nSkills、模板和扩展命令经 Pi 的 get_commands 发现。\nRPC 不支持终端专用 custom() 弹窗、主题和替换输入编辑器。\n会话、认证和技能由原来的 Pi 管理。\n")))
+  (etaf-pi--current)
+  (when-let* ((window (get-buffer-window (current-buffer) t)))
+    (select-window window))
+  (etaf-help (etaf-runtime-for-buffer (current-buffer))))
 
 (defun etaf-pi-reconnect ()
   "Reconnect a stopped backend, resuming the last known saved session."
@@ -597,18 +600,36 @@ DIALOG marks a Pi editor request answered by the next submission."
 
 (defvar etaf-pi-mode-map
   (let ((map (make-sparse-keymap)))
-    (dolist (pair '(("i" . etaf-pi-edit) ("e" . etaf-pi-edit) (":" . etaf-pi-compose) ("a" . etaf-pi-answer)
-                    ("C-c C-k" . etaf-pi-abort) ("m" . etaf-pi-select-model) ("T" . etaf-pi-select-thinking)
-                    ("n" . etaf-pi-new-session) ("r" . etaf-pi-resume) ("g" . etaf-pi-follow)
-                    
-                    ("<next>" . etaf-pi-page-down) ("<prior>" . etaf-pi-page-up)
-                    ("t" . etaf-pi-show-tools) ("R" . etaf-pi-reconnect)
-                    ("C-c h" . etaf-pi-help) ("q" . etaf-pi-close)))
-      (define-key map (kbd (car pair)) (cdr pair)))
-    (define-key map [wheel-up] (lambda (event) (interactive (list last-input-event)) (etaf-pi--wheel event -3)))
-    (define-key map [wheel-down] (lambda (event) (interactive (list last-input-event)) (etaf-pi--wheel event 3)))
-    (define-key map (kbd "C-v") #'etaf-pi-page-down)
-    (define-key map (kbd "M-v") #'etaf-pi-page-up)
+    (dolist (binding '(("i" etaf-pi-edit "编辑消息")
+                       ("e" etaf-pi-edit "编辑消息")
+                       (":" etaf-pi-compose "快速命令")
+                       ("a" etaf-pi-answer "处理待确认请求")
+                       ("C-c C-k" etaf-pi-abort "停止并收回待发消息")
+                       ("m" etaf-pi-select-model "选择模型")
+                       ("T" etaf-pi-select-thinking "选择思考级别")
+                       ("n" etaf-pi-new-session "新建会话")
+                       ("r" etaf-pi-resume "恢复会话")
+                       ("g" etaf-pi-follow "跟随最新回复")
+                       ("<next>" etaf-pi-page-down "历史下一页")
+                       ("<prior>" etaf-pi-page-up "历史上一页")
+                       ("C-v" etaf-pi-page-down "历史下一页")
+                       ("M-v" etaf-pi-page-up "历史上一页")
+                       ("t" etaf-pi-show-tools "完整工具输出")
+                       ("R" etaf-pi-reconnect "重新连接")
+                       ("C-c h" etaf-pi-help "查看快捷键")
+                       ("q" etaf-pi-close "关闭客户端")))
+      (define-key map (kbd (car binding))
+                  (list 'menu-item (nth 2 binding) (nth 1 binding))))
+    (define-key map [wheel-up]
+                '(menu-item "向上浏览历史"
+                            (lambda (event)
+                              (interactive (list last-input-event))
+                              (etaf-pi--wheel event -3))))
+    (define-key map [wheel-down]
+                '(menu-item "向下浏览历史"
+                            (lambda (event)
+                              (interactive (list last-input-event))
+                              (etaf-pi--wheel event 3))))
     map))
 (defvar etaf-pi--command-maps (list (cons 'etaf-pi--state etaf-pi-mode-map)))
 
