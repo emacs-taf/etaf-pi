@@ -11,7 +11,7 @@ Emacs 负责文字编辑。不是内嵌终端，也不抓取 Pi 的屏幕输出�
 
 需要 Emacs 29.1+、PATH 中的 Pi（开发所用协议版本 0.87.1）和
 `etaf`、`etaf-ui`、`ebox`、`ecss` 的检出。提供者可放在应用旁边，
-也可沿用 `emacs-taf/etaf-apps/etaf-pi` 的嵌套工作区。
+也可沿用 `emacs-taf/etaf-pi` 的嵌套工作区。
 
 把这些仓库的根目录加入 `load-path` 后：
 

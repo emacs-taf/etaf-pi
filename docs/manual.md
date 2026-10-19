@@ -87,8 +87,8 @@ Pi 在 RPC 模式会正常加载资源，但终端专用扩展接口不支持或
 
 ```sh
 python3 scripts/performance.py run --mode gui --server etaf-pi-verify \
-  --scenario-file etaf-apps/etaf-pi/benchmarks/performance-scenarios.el \
-  --load-path etaf-apps/etaf-pi \
+  --scenario-file etaf-pi/benchmarks/performance-scenarios.el \
+  --load-path etaf-pi \
   --scenario pi.client.history --samples 30 --warmups 5 --sets 3
 ```
 
