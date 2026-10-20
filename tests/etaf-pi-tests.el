@@ -351,5 +351,47 @@
         (when (buffer-live-p buffer)
           (with-current-buffer buffer (etaf-pi-close)))))))
 
+(defun etaf-pi-test--canvas (buffer)
+  "Return BUFFER's base default face colors as (BACKGROUND FOREGROUND)."
+  (with-current-buffer buffer
+    (let ((base (car (last (alist-get 'default face-remapping-alist)))))
+      (list (plist-get base :background) (plist-get base :foreground)))))
+
+(deftheme etaf-pi-test-dark "Theme the canvas test enables after a color mode change.")
+
+(ert-deftest etaf-pi-test-canvas-follows-theme-and-root-keys ()
+  "The canvas follows a theme's color mode; root keys are labelled and q closes."
+  (let ((etaf-pi-command etaf-pi-test--command) buffer)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (let ((frame-background-mode 'light))
+              (frame-set-background-mode (selected-frame))
+              (setq buffer (etaf-pi-open temporary-file-directory t)))
+            (with-current-buffer buffer
+              (etaf-pi-test--wait (lambda () (equal (plist-get (etaf-pi-info) :phase) "就绪")))
+              (should-not mode-line-format)
+              (should-not cursor-type))
+            (should (equal (etaf-pi-test--canvas buffer) '("#f7f8fc" "#232a33")))
+            (let ((frame-background-mode 'dark))
+              (frame-set-background-mode (selected-frame))
+              (enable-theme 'etaf-pi-test-dark))
+            (should (equal (etaf-pi-test--canvas buffer) '("#0f1218" "#e6eaf2")))
+            (with-current-buffer buffer
+              (let* ((data (etaf-help-data (etaf-runtime-for-buffer buffer)))
+                     (entries (apply #'append (mapcar (lambda (group) (plist-get group :entries))
+                                                      (plist-get data :groups))))
+                     (labels (mapcar (lambda (key)
+                                       (plist-get (cl-find key entries :test #'equal
+                                                           :key (lambda (entry) (plist-get entry :key)))
+                                                  :label))
+                                     '("T" "r" "g" "q"))))
+                (should (equal labels '("选择思考级别" "恢复会话" "跟随最新回复" "关闭客户端"))))
+              (execute-kbd-macro (kbd "q")))
+            (should-not (buffer-live-p buffer)))
+        (disable-theme 'etaf-pi-test-dark)
+        (frame-set-background-mode (selected-frame))
+        (when (buffer-live-p buffer) (with-current-buffer buffer (etaf-pi-close)))))))
+
 (provide 'etaf-pi-tests)
 ;;; etaf-pi-tests.el ends here

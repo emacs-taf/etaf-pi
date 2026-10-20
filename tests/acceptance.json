@@ -75,6 +75,11 @@
       "name": "etaf-pi-test-reentrant-listener-preserves-wire-order",
       "file": "tests/etaf-pi-tests.el",
       "purpose": "Callbacks yielding for subprocess output cannot reorder JSONL events and responses."
+    },
+    {
+      "name": "etaf-pi-test-canvas-follows-theme-and-root-keys",
+      "file": "tests/etaf-pi-tests.el",
+      "purpose": "The client canvas follows the Emacs theme's color mode, help labels the root keys and q closes the client through them."
     }
   ]
 }

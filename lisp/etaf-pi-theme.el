@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'etaf)
+(require 'etaf-ui)
 
 (defconst etaf-pi-palette
   '((:bg          . ("#f7f8fc" . "#0f1218"))
@@ -36,33 +37,27 @@ against the frame's background mode.")
   "Return the color mode the client should paint with."
   (etaf-theme-current-mode))
 
-(defun etaf-pi-color (key)
-  "Return the palette color for KEY in the current color mode."
-  (let ((value (alist-get key etaf-pi-palette)))
+(defun etaf-pi-color (key &optional mode)
+  "Return the palette color for KEY in MODE, `light' or `dark'.
+MODE defaults to the current color mode."
+  (let ((value (alist-get key etaf-pi-palette))
+        (dark (eq (or mode (etaf-pi--palette-mode)) 'dark)))
     (cond
      ((stringp value) value)
      ((and (consp value) (stringp (car value)) (stringp (cdr value)))
-      (if (eq (etaf-pi--palette-mode) 'dark) (cdr value) (car value)))
-     (t (if (eq (etaf-pi--palette-mode) 'dark) "#e6edf3" "#1f2328")))))
+      (if dark (cdr value) (car value)))
+     (t (if dark "#e6edf3" "#1f2328")))))
 
 (defun etaf-pi--theme-tokens ()
-  "Supply the shared catalog with the workbench's semantic palette."
-  (etaf-theme-resolve-palette
-   (list :ui-fg (etaf-pi-color :ink) :ui-bg (etaf-pi-color :bg)
-         :ui-muted (etaf-pi-color :muted) :ui-border (etaf-pi-color :border)
-         :ui-muted-fg (etaf-pi-color :muted)
-         :ui-panel-fg (etaf-pi-color :ink)
-         :ui-panel-bg (etaf-pi-color :surface-2)
-         :ui-panel-border (etaf-pi-color :border)
-         :ui-success-fg (etaf-pi-color :ok) :ui-success-bg (etaf-pi-color :accent-soft)
-         :ui-danger-fg (etaf-pi-color :error)
-         :ui-accent (etaf-pi-color :accent) :ui-accent-fg (etaf-pi-color :button-ink)
-         :ui-accent-soft-bg (etaf-pi-color :accent-soft)
-         :ui-button-secondary-fg (etaf-pi-color :accent)
-         :ui-button-secondary-bg (etaf-pi-color :accent-soft)
-         :ui-button-ghost-fg (etaf-pi-color :muted)
-         :ui-progress-track (etaf-pi-color :surface-2))
-   (etaf-pi--palette-mode)))
+  "Map the semantic palette onto the shared catalog's Theme tokens."
+  (etaf-ui-theme-tokens
+   (list :bg (etaf-pi-color :bg) :fg (etaf-pi-color :ink)
+         :panel (etaf-pi-color :surface-2) :border (etaf-pi-color :border)
+         :muted (etaf-pi-color :muted) :accent (etaf-pi-color :accent)
+         :accent-fg (etaf-pi-color :button-ink)
+         :accent-soft (etaf-pi-color :accent-soft)
+         :success (etaf-pi-color :ok) :success-bg (etaf-pi-color :accent-soft)
+         :danger (etaf-pi-color :error))))
 
 (provide 'etaf-pi-theme)
 ;;; etaf-pi-theme.el ends here

@@ -45,18 +45,25 @@ Changing adapter semantics requires updating this version and its tests.
 ## Rendering and input
 
 The application paints a bounded transcript Host, separate from its status
-Host, and an in-layout composer. Navigation has its own ETAF runtime in an
-owned native window, so the sidebar keeps the full height of the conversation
-area; the conversation, the composer field and its control row share one
-Runtime. Message text wraps at the available width (capped at 92 cells);
-completed-message wrapping is cached per width. Semantic text faces distinguish
+Host, and an in-layout composer. The client and its navigation sidebar are two
+ETAF applications opened with `etaf-app-open`: each owns its canvas, a default
+face that follows the client's color mode, its fit to the settled window and a
+single teardown, and the client's commands are the root `:keys` of its surface,
+labelled in help. The sidebar lives in an owned native window, so it keeps the
+full height of the conversation area; the conversation, the composer field and
+its control row share one Runtime. Message text wraps at the available width
+(capped at 92 cells); completed-message wrapping is cached per width and color
+mode. Semantic text faces distinguish
 user messages, replies, code and tool summaries without changing row metrics.
 Incoming deltas only set dirty state. A single 80 ms timer coalesces them into a
 retained content batch. The transcript uses one Host rather than one per line to
-avoid repeated projection overhead. Nothing is scheduled while idle. Resize
-rebuilds layout, not conversation history. Scrolling stops auto-follow.
-Lines borrowed by an active minibuffer are not a resize: the committed rows
-keep the layout until the prompt closes.
+avoid repeated projection overhead. Nothing is scheduled while idle. A changed
+window shape, color mode or control row mounts the surface again; history is
+not rebuilt. Scrolling stops auto-follow. The sidebar re-renders reactively
+from its rows and the color mode.
+Lines borrowed by an active minibuffer are not a resize: the application fit
+runs only for settled window changes, so the committed rows keep the layout
+until the prompt closes.
 
 The composer is ETAF UI's `etaf-text-input` inside that surface: activation
 opens a native session over the field's published text in the conversation
@@ -64,8 +71,8 @@ buffer, so native Emacs owns editing, IME, point, selection, undo and
 completion, and no extra frame or editor buffer exists. The framework defers
 publication while the session owns the text and republishes the accepted value
 when it ends; per-keystroke edits reach the draft through the field's binding.
-Pi owns the command map, draft mirroring and send/acknowledgement policy. Enter
-sends, Shift+Return inserts a newline, and Escape/`C-c C-k` ends the session
+Pi supplies the submit and cancel handlers, draft mirroring and the
+send/acknowledgement policy. Enter sends, Shift+Return inserts a newline, and Escape/`C-c C-k` ends the session
 while keeping the accepted text as the draft. Acceptance clears the draft only
 when no session is active and the draft still equals the submitted text, so a
 failed request or any intervening edit preserves it. Because a session edits

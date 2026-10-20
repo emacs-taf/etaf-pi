@@ -232,11 +232,13 @@ binding, callbacks and the visible control state."
   :setup (etaf-theme-provide (etaf-pi--theme-tokens))
   :render (etaf-pi--surface-view title status lines layout navigation composer actions))
 
-(defun etaf-pi--shell-view (title status lines layout navigation composer actions)
-  "Compose a quiet conversation header, message stream and in-layout composer."
+(defun etaf-pi--shell-view (title status lines layout navigation composer actions keys)
+  "Compose a quiet conversation header, message stream and in-layout composer.
+KEYS become the surface's root `:keys'."
   (etaf-node 'etaf-pi-surface
              (list :title title :status status :lines lines :layout layout
-                   :navigation navigation :composer composer :actions actions)
+                   :navigation navigation :composer composer :actions actions
+                   :keys keys)
              nil))
 
 (declare-function etaf-pi--direction "etaf-pi-app" (direction))

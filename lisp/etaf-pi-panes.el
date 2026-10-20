@@ -2,37 +2,16 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; Commentary:
 ;; The conversation and its composer are one ETAF surface. The optional
-;; navigation sidebar is a second owned ETAF buffer in a real window; only
-;; windows displaying owned buffers are created or removed.
+;; navigation sidebar is a second owned ETAF application in a real window;
+;; only windows displaying owned buffers are created or removed.
 ;;; Code:
 (require 'cl-lib)
 (require 'etaf)
 (require 'etaf-pi-views)
-(defvar-local etaf-pi--pane-owner nil)
 (defvar-local etaf-pi--navigation nil)
 (defvar-local etaf-pi--navigation-window nil)
-(defvar-local etaf-pi--navigation-painted nil)
-
-(define-derived-mode etaf-pi--pane-mode special-mode "Pi"
-  "Read-only application chrome."
-  (setq-local mode-line-format nil header-line-format nil cursor-type nil)
-  (setq-local truncate-lines t)
-  ;; The canvas owns every column it paints.  A sub-cell rounding
-  ;; remainder must not surface as Emacs's truncation glyph.
-  (setq-local buffer-display-table
-              (let ((table (copy-sequence (or standard-display-table
-                                              (make-display-table)))))
-                (set-display-table-slot table 'truncation ?\s)
-                table))
-  (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
-  (face-remap-set-base 'default (list :background (etaf-pi-color :surface) :foreground (etaf-pi-color :ink))))
-
-(defun etaf-pi--pane-buffer (kind)
-  "Create an owned pane buffer named KIND for this conversation."
-  (let ((owner (current-buffer))
-        (buffer (generate-new-buffer (format " *Pi %s: %s*" kind (buffer-name)))))
-    (with-current-buffer buffer (etaf-pi--pane-mode) (setq etaf-pi--pane-owner owner))
-    buffer))
+(defvar-local etaf-pi--palette nil
+  "Ref holding the color mode this client last mounted its views with.")
 
 (defun etaf-pi--remove-pane-window (buffer)
   "Remove displayed windows of BUFFER, never the last window of a frame."
@@ -40,38 +19,50 @@
     (dolist (window (get-buffer-window-list buffer nil t))
       (unless (one-window-p t (window-frame window)) (delete-window window)))))
 
-(defun etaf-pi--ensure-navigation ()
-  "Keep a full-height conversation sidebar only when the owned area fits."
+(defun etaf-pi--open-navigation (main actions)
+  "Open this conversation's navigation application left of window MAIN.
+ACTIONS target the conversation.  The sidebar follows its window's settled
+rows and the client's palette reactively; its state is the owning buffer."
+  (let* ((owner (current-buffer))
+         (title (file-name-nondirectory (directory-file-name default-directory)))
+         (palette etaf-pi--palette)
+         (rows (etaf-ref (window-body-height main))))
+    (etaf-app-open
+     (generate-new-buffer-name (format " *Pi 会话: %s*" (buffer-name)))
+     (lambda ()
+       ;; The view reads the palette so a theme change repaints its colors.
+       (etaf-value palette)
+       (etaf-pi--sidebar-view title (etaf-value rows) actions))
+     :state owner :cursor nil
+     :background (lambda () (etaf-pi-color :surface (etaf-value palette)))
+     :foreground (lambda () (etaf-pi-color :ink (etaf-value palette)))
+     :on-fit (lambda (window) (setf (etaf-value rows) (window-body-height window)))
+     :display (lambda (buffer)
+                (let ((window (split-window main -22 'left)))
+                  (set-window-buffer window buffer)
+                  (with-current-buffer buffer (setq-local window-size-fixed 'width))
+                  (with-current-buffer owner (setq etaf-pi--navigation-window window)))))))
+
+(defun etaf-pi--ensure-navigation (actions)
+  "Keep a full-height conversation sidebar only when the owned area fits.
+ACTIONS bind the sidebar's controls to this conversation."
   (when-let* ((main (get-buffer-window (current-buffer) t)))
     (let* ((nav (and (buffer-live-p etaf-pi--navigation) (get-buffer-window etaf-pi--navigation t)))
            (columns (+ (window-total-width main) (if nav (window-total-width nav) 0)))
            (show (and (>= columns 110) (>= (frame-height (window-frame main)) 26))))
       (cond
        ((and show (not nav) (not (window-live-p etaf-pi--navigation-window)))
-        (unless (buffer-live-p etaf-pi--navigation)
-          (setq etaf-pi--navigation (etaf-pi--pane-buffer "会话")))
-        (let ((window (split-window main -22 'left)))
-          (set-window-buffer window etaf-pi--navigation)
-          (setq etaf-pi--navigation-window window)
-          (with-current-buffer etaf-pi--navigation (setq-local window-size-fixed 'width))))
+        (if (buffer-live-p etaf-pi--navigation)
+            (let ((window (split-window main -22 'left)))
+              (set-window-buffer window etaf-pi--navigation)
+              (setq etaf-pi--navigation-window window))
+          (setq etaf-pi--navigation (etaf-pi--open-navigation main actions))))
        ((and nav (not show)) (etaf-pi--remove-pane-window etaf-pi--navigation))))))
 
-(defun etaf-pi--sync-navigation (title actions)
-  "Repaint the visible navigation sidebar when TITLE, size or ACTIONS changed."
-  (when-let* ((window (and (buffer-live-p etaf-pi--navigation)
-                           (get-buffer-window etaf-pi--navigation t))))
-    (let* ((height (window-body-height window))
-           (signature (list title height (window-body-width window))))
-      (unless (equal signature etaf-pi--navigation-painted)
-        (etaf-mount etaf-pi--navigation (etaf-pi--sidebar-view title height actions))
-        (with-current-buffer etaf-pi--navigation (setq-local cursor-type nil))
-        (setq etaf-pi--navigation-painted signature)))))
-
 (defun etaf-pi--dispose-panes ()
-  "Release only the owned navigation buffer and its window."
+  "Release only the owned navigation application and its window."
   (when (buffer-live-p etaf-pi--navigation)
     (etaf-pi--remove-pane-window etaf-pi--navigation)
-    (when-let* ((runtime (etaf-runtime-for-buffer etaf-pi--navigation))) (etaf-unmount runtime))
     (kill-buffer etaf-pi--navigation))
   (setq etaf-pi--navigation nil etaf-pi--navigation-window nil))
 

@@ -27,7 +27,6 @@
 (defvar-local etaf-pi--paint-timer nil)
 (defvar-local etaf-pi--painted nil)
 (defvar-local etaf-pi--shape nil)
-(defvar-local etaf-pi--palette-painted nil)
 (defvar-local etaf-pi--line-cache nil)
 (defvar-local etaf-pi--follow t)
 (defvar-local etaf-pi--offset 0)
@@ -37,9 +36,10 @@
 (defvar-local etaf-pi--composer-dialog nil)
 (defvar-local etaf-pi--sending nil)
 (defvar-local etaf-pi--page-rows 20)
-(defvar-local etaf-pi--layout-rows nil
-  "Window body rows the current layout was committed for.
-Transient minibuffer space never shrinks it; the next real size updates it.")
+(defvar-local etaf-pi--rows nil
+  "Settled window body rows the layout is committed to.
+Lines a minibuffer borrows never reach it; the application fit records the
+next real size.")
 (defvar-local etaf-pi--layout-facts nil)
 (defvar-local etaf-pi--actions nil)
 (defvar-local etaf-pi--session-editing nil)
@@ -52,6 +52,31 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
   "Require a client buffer."
   (unless etaf-pi--state (user-error "当前不是 ETAF Pi 会话"))
   etaf-pi--state)
+
+;; The keys are the shell's root `:keys': help lists them with these labels,
+;; and a focused control or a native composer session keeps its own keys.
+(defconst etaf-pi--bindings
+  '(("i" etaf-pi-edit "编辑消息")
+    ("e" etaf-pi-edit "编辑消息")
+    (":" etaf-pi-compose "快速命令")
+    ("a" etaf-pi-answer "处理待确认请求")
+    ("C-c C-k" etaf-pi-abort "停止并收回待发消息")
+    ("m" etaf-pi-select-model "选择模型")
+    ("T" etaf-pi-select-thinking "选择思考级别")
+    ("n" etaf-pi-new-session "新建会话")
+    ("r" etaf-pi-resume "恢复会话")
+    ("g" etaf-pi-follow "跟随最新回复")
+    ("<next>" etaf-pi-page-down "历史下一页")
+    ("<prior>" etaf-pi-page-up "历史上一页")
+    ("C-v" etaf-pi-page-down "历史下一页")
+    ("M-v" etaf-pi-page-up "历史上一页")
+    ("<wheel-up>" etaf-pi--wheel-up "向上浏览历史")
+    ("<wheel-down>" etaf-pi--wheel-down "向下浏览历史")
+    ("t" etaf-pi-show-tools "完整工具输出")
+    ("R" etaf-pi-reconnect "重新连接")
+    ("C-c h" etaf-pi-help "查看快捷键")
+    ("q" etaf-pi-close "关闭客户端"))
+  "Client keys as (KEY COMMAND LABEL) entries of the shell's root `:keys'.")
 
 (defun etaf-pi--schedule-paint ()
   "Schedule one paint; no timers run while idle."
@@ -115,12 +140,11 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
   (etaf-pi--request "get_messages"))
 
 (defun etaf-pi--refresh-theme (&optional _theme)
-  "Repaint open clients after the Emacs theme or its color mode changes."
+  "Rebuild visible clients after the Emacs theme or its color mode changes.
+A hidden client rebuilds when it is shown again."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
-      (when (and etaf-pi--state (get-buffer-window buffer t))
-        (clrhash etaf-pi--line-cache)
-        (setq etaf-pi--navigation-painted nil)
+      (when (and etaf-pi--state (not etaf-pi--disposed) (get-buffer-window buffer t))
         (etaf-pi--paint t)))))
 
 (when (boundp 'enable-theme-functions)
@@ -202,56 +226,96 @@ Transient minibuffer space never shrinks it; the next real size updates it.")
                     (when-let* ((window (get-buffer-window buffer t))) (select-window window))
                     (etaf-pi-follow)))))
 
-(defun etaf-pi--window-rows (window)
-  "Return the body height to lay the session out for in WINDOW.
-A minibuffer that borrows lines does not shrink the committed layout; the
-next real size is followed as usual."
-  (let ((current (window-body-height window)))
-    (unless (etaf-transient-space-borrowed-p window etaf-pi--layout-rows)
-      (setq etaf-pi--layout-rows current))
-    (or etaf-pi--layout-rows current)))
+(defun etaf-pi--height (window)
+  "Return the body rows the layout is committed to in WINDOW."
+  (max 6 (or etaf-pi--rows (window-body-height window))))
 
-(defun etaf-pi--paint (&optional rebuild)
-  "Update visible chat content, composer and navigation chrome."
-  (etaf-pi--ensure-navigation)
+(defun etaf-pi--fit (window)
+  "Commit WINDOW's settled body rows and repaint a mounted client."
+  (setq etaf-pi--rows (window-body-height window))
+  (when (etaf-runtime-for-buffer (current-buffer))
+    (etaf-pi--schedule-paint)))
+
+(defun etaf-pi--frame (window)
+  "Return this client's paint facts for WINDOW.
+The plist holds the shell view inputs, the visible transcript slice and the
+shape and control signatures that decide between a rebuild and patches."
   (let* ((title (file-name-nondirectory (directory-file-name default-directory)))
          (session (etaf-pi--state-session etaf-pi--state))
          (model (plist-get session :model))
          (busy (and (member (etaf-pi--state-phase etaf-pi--state)
                             '("回复中" "重试中" "压缩中")) t))
-         (pending (length (etaf-pi--state-dialogs etaf-pi--state))))
-    (when-let* ((window (get-buffer-window (current-buffer) t)))
-      (let* ((width (max 28 (window-body-width window)))
-             (height (max 6 (etaf-pi--window-rows window)))
-             (layout (etaf-pi--layout width height)) (rows (max 1 (- height 10)))
-             (all (etaf-pi--transcript (plist-get layout :measure)))
-             (start (if etaf-pi--follow (max 0 (- (length all) rows))
-                      (min etaf-pi--offset (max 0 (- (length all) rows)))))
-             (lines (cl-subseq all start (min (length all) (+ start rows))))
-             (status (etaf-pi--summary (- width 8)))
+         (pending (length (etaf-pi--state-dialogs etaf-pi--state)))
+         (width (max 28 (window-body-width window)))
+         (height (etaf-pi--height window))
+         (layout (etaf-pi--layout width height)) (rows (max 1 (- height 10)))
+         (all (etaf-pi--transcript (plist-get layout :measure)))
+         (start (if etaf-pi--follow (max 0 (- (length all) rows))
+                  (min etaf-pi--offset (max 0 (- (length all) rows)))))
+         (lines (cl-subseq all start (min (length all) (+ start rows))))
+         (composer (list :draft etaf-pi--draft
+                         :placeholder "发消息，或输入 / 选择命令"
+                         :rows 3
+                         :completion (list #'etaf-pi--complete-command)
+                         :submit #'etaf-pi--composer-submit
+                         :cancel #'etaf-pi--composer-cancel
+                         :model (or (plist-get model :name) (plist-get model :id) "选择模型")
+                         :thinking (or (plist-get session :thinkingLevel) "off")
+                         :busy busy :pending pending :sending etaf-pi--sending
+                         :width width :actions etaf-pi--actions)))
+    (setq etaf-pi--layout-facts layout etaf-pi--offset start
+          etaf-pi--total-lines (length all) etaf-pi--page-rows rows)
+    (list :title title :status (etaf-pi--summary (- width 8))
+          :lines (cons (if etaf-pi--follow "" (etaf-pi--ink "查看历史 · g 回到最新" :muted))
+                       (append lines (make-list (- rows (length lines)) "")))
+          :layout layout
+          :navigation (and (buffer-live-p etaf-pi--navigation)
+                           (get-buffer-window etaf-pi--navigation t))
+          :composer composer
+          :controls (list (plist-get composer :model) (plist-get composer :thinking)
+                          busy pending etaf-pi--sending)
+          :shape (list width height))))
+
+(defun etaf-pi--frame-view (frame)
+  "Return the shell view for FRAME and record its shape and controls."
+  (setq etaf-pi--shape (plist-get frame :shape)
+        etaf-pi--controls-painted (plist-get frame :controls))
+  (etaf-pi--shell-view (plist-get frame :title) (plist-get frame :status)
+                       (plist-get frame :lines) (plist-get frame :layout)
+                       (plist-get frame :navigation) (plist-get frame :composer)
+                       etaf-pi--actions etaf-pi--bindings))
+
+(defun etaf-pi--view (buffer)
+  "Return client BUFFER's first view, laid out for its display window."
+  (with-current-buffer buffer
+    (let ((window (get-buffer-window buffer t)))
+      (if (not window)
+          (etaf-view (box))
+        (let ((frame (etaf-pi--frame window)))
+          (setq etaf-pi--painted (list :status (plist-get frame :status)
+                                       :lines (plist-get frame :lines)))
+          (etaf-pi--frame-view frame))))))
+
+(defun etaf-pi--paint (&optional rebuild)
+  "Update visible chat content, composer and navigation chrome.
+A changed shape, color mode or control row, or REBUILD, mounts the view
+again; otherwise only the status and transcript Hosts are patched."
+  (etaf-pi--ensure-navigation etaf-pi--actions)
+  (when-let* ((window (get-buffer-window (current-buffer) t)))
+    (let ((mode (etaf-pi--palette-mode)))
+      ;; Cached transcript lines carry the colors of the mode they were
+      ;; wrapped in.
+      (unless (eq mode (etaf-value etaf-pi--palette))
+        (clrhash etaf-pi--line-cache))
+      (let* ((frame (etaf-pi--frame window))
+             (status (plist-get frame :status))
+             (lines (plist-get frame :lines))
              (runtime (etaf-runtime-for-buffer (current-buffer)))
-             (navigation (and (buffer-live-p etaf-pi--navigation) (get-buffer-window etaf-pi--navigation t)))
-             (composer (list :draft etaf-pi--draft
-                             :placeholder "发消息，或输入 / 选择命令"
-                             :rows 3
-                             :completion (list #'etaf-pi--complete-command)
-                             :submit #'etaf-pi--composer-submit
-                             :cancel #'etaf-pi--composer-cancel
-                             :model (or (plist-get model :name) (plist-get model :id) "选择模型")
-                             :thinking (or (plist-get session :thinkingLevel) "off")
-                             :busy busy :pending pending :sending etaf-pi--sending
-                             :width width :actions etaf-pi--actions))
-             (controls (list (plist-get composer :model) (plist-get composer :thinking)
-                             busy pending etaf-pi--sending))
              (rebuildp (or rebuild (null runtime)
-                           (not (equal etaf-pi--shape (list width height)))
-                           (not (equal (etaf-pi--palette-mode) etaf-pi--palette-painted))
-                           (not (equal controls etaf-pi--controls-painted))))
+                           (not (equal etaf-pi--shape (plist-get frame :shape)))
+                           (not (eq mode (etaf-value etaf-pi--palette)))
+                           (not (equal (plist-get frame :controls) etaf-pi--controls-painted))))
              (editing (and runtime (etaf-text-input-active-p runtime))))
-        (setq etaf-pi--layout-facts layout etaf-pi--offset start
-              etaf-pi--total-lines (length all) etaf-pi--page-rows rows)
-        (setq lines (cons (if etaf-pi--follow "" (etaf-pi--ink "查看历史 · g 回到最新" :muted))
-                          (append lines (make-list (- rows (length lines)) ""))))
         ;; A native session owns the buffer text.  Its ending flush republishes
         ;; the field, but retained cohorts describe pre-session text, so the
         ;; next paint after it ends rebuilds instead of patching.
@@ -259,13 +323,11 @@ next real size is followed as usual."
          (editing (setq etaf-pi--session-editing t))
          ((or rebuildp etaf-pi--session-editing)
           (setq etaf-pi--session-editing nil)
-          (etaf-mount (current-buffer)
-                      (etaf-pi--shell-view title status lines layout
-                                           navigation composer etaf-pi--actions)
-                      (list :viewport-height height))
-          (setq etaf-pi--shape (list width height)
-                etaf-pi--palette-painted (etaf-pi--palette-mode)
-                etaf-pi--controls-painted controls))
+          (etaf-mount (current-buffer) (etaf-pi--frame-view frame)
+                      (list :viewport-height (etaf-pi--height window)))
+          ;; The canvas of the client and its sidebar follow this ref.
+          (unless (eq mode (etaf-value etaf-pi--palette))
+            (setf (etaf-value etaf-pi--palette) mode)))
          (t
           (let (updates)
             (unless (equal-including-properties status (plist-get etaf-pi--painted :status))
@@ -277,10 +339,8 @@ next real size is followed as usual."
             (when (and runtime updates)
               (etaf-runtime-update-host-contents runtime (nreverse updates))))))
         (setq etaf-pi--painted (list :status status :lines lines))
-        (setq-local cursor-type nil)
-        (set-window-hscroll window 0) (set-window-start window (point-min))))
-    (etaf-pi--sync-navigation title etaf-pi--actions)
-    (setq etaf-pi--controls-phase (etaf-pi--state-phase etaf-pi--state))))
+        (set-window-hscroll window 0) (set-window-start window (point-min)))))
+  (setq etaf-pi--controls-phase (etaf-pi--state-phase etaf-pi--state)))
 
 (defun etaf-pi-info ()
   "Return current client facts, including backend liveness and visible viewport."
@@ -575,20 +635,19 @@ Return the client buffer; no separate help buffer or window is created."
     (etaf-pi--request "get_available_thinking_levels")))
 
 (defun etaf-pi--dispose ()
-  "Release only this buffer's resources."
+  "Release only this buffer's resources; the application unmounts its view."
   (unless etaf-pi--disposed
     (setq etaf-pi--disposed t)
     (when etaf-pi--paint-timer (cancel-timer etaf-pi--paint-timer) (setq etaf-pi--paint-timer nil))
     (when etaf-pi--connection (etaf-pi-rpc-close etaf-pi--connection))
     (etaf-pi--dispose-panes)
     (when (and etaf-pi--draft (not (string-empty-p (etaf-value etaf-pi--draft))))
-      (message "未发送的草稿保留在 %s" (buffer-name)))
-    (when-let* ((runtime (etaf-runtime-for-buffer (current-buffer)))) (etaf-unmount runtime))))
+      (message "未发送的草稿保留在 %s" (buffer-name)))))
 
 (defun etaf-pi-close ()
   "Close the current client and its child; keep the saved Pi conversation."
   (interactive) (etaf-pi--current)
-  (etaf-pi--dispose) (kill-buffer (current-buffer)))
+  (etaf-app-close))
 
 (defun etaf-pi--wheel (event direction)
   "Scroll EVENT's message window by DIRECTION without stealing input focus."
@@ -598,50 +657,22 @@ Return the client buffer; no separate help buffer or window is created."
           (if (< direction 0) (etaf-pi-page-up (- direction)) (etaf-pi-page-down direction)))
       (if (< direction 0) (etaf-pi-page-up (- direction)) (etaf-pi-page-down direction)))))
 
-(defvar etaf-pi-mode-map
-  (let ((map (make-sparse-keymap)))
-    (dolist (binding '(("i" etaf-pi-edit "编辑消息")
-                       ("e" etaf-pi-edit "编辑消息")
-                       (":" etaf-pi-compose "快速命令")
-                       ("a" etaf-pi-answer "处理待确认请求")
-                       ("C-c C-k" etaf-pi-abort "停止并收回待发消息")
-                       ("m" etaf-pi-select-model "选择模型")
-                       ("T" etaf-pi-select-thinking "选择思考级别")
-                       ("n" etaf-pi-new-session "新建会话")
-                       ("r" etaf-pi-resume "恢复会话")
-                       ("g" etaf-pi-follow "跟随最新回复")
-                       ("<next>" etaf-pi-page-down "历史下一页")
-                       ("<prior>" etaf-pi-page-up "历史上一页")
-                       ("C-v" etaf-pi-page-down "历史下一页")
-                       ("M-v" etaf-pi-page-up "历史上一页")
-                       ("t" etaf-pi-show-tools "完整工具输出")
-                       ("R" etaf-pi-reconnect "重新连接")
-                       ("C-c h" etaf-pi-help "查看快捷键")
-                       ("q" etaf-pi-close "关闭客户端")))
-      (define-key map (kbd (car binding))
-                  (list 'menu-item (nth 2 binding) (nth 1 binding))))
-    (define-key map [wheel-up]
-                '(menu-item "向上浏览历史"
-                            (lambda (event)
-                              (interactive (list last-input-event))
-                              (etaf-pi--wheel event -3))))
-    (define-key map [wheel-down]
-                '(menu-item "向下浏览历史"
-                            (lambda (event)
-                              (interactive (list last-input-event))
-                              (etaf-pi--wheel event 3))))
-    map))
-(defvar etaf-pi--command-maps (list (cons 'etaf-pi--state etaf-pi-mode-map)))
+(defun etaf-pi--wheel-up (event)
+  "Browse three older lines in the window of wheel EVENT."
+  (interactive (list last-input-event))
+  (etaf-pi--wheel event -3))
 
-(define-derived-mode etaf-pi-mode special-mode "ETAF Pi"
-  "Native Pi session with retained ETAF transcript and Emacs input.")
+(defun etaf-pi--wheel-down (event)
+  "Browse three newer lines in the window of wheel EVENT."
+  (interactive (list last-input-event))
+  (etaf-pi--wheel event 3))
 
 (defun etaf-pi--buffer-owner (buffer)
   "Find the conversation owning BUFFER, including native input and chrome."
   (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (cond (etaf-pi--state buffer)
-            ((buffer-live-p etaf-pi--pane-owner) etaf-pi--pane-owner)))))
+    (let ((owner (etaf-app-state buffer)))
+      (cond ((buffer-local-value 'etaf-pi--state buffer) buffer)
+            ((and (bufferp owner) (buffer-live-p owner)) owner)))))
 
 (defun etaf-pi--hide-client-panes (owner)
   "Hide OWNER's navigation pane without stopping its backend or drafts."
@@ -658,57 +689,68 @@ Reuse its buffer unless NEW is non-nil.  Return the client buffer immediately."
                                                             (project-root project)) default-directory))))
          (_valid (unless (file-directory-p directory) (user-error "目录不存在：%s" directory)))
          (name (format "*Pi: %s*" (abbreviate-file-name (directory-file-name directory))))
-         (buffer (if new (generate-new-buffer name) (get-buffer-create name)))
-         (display-buffer-overriding-action '((display-buffer-same-window))))
-    (let ((previous (etaf-pi--buffer-owner (window-buffer (selected-window))))
-          (visible (get-buffer-window buffer t))
-          (remembered (buffer-local-value 'etaf-pi--main-window buffer)))
-      (when (and previous (not (eq previous buffer))) (etaf-pi--hide-client-panes previous))
-      (cond
-       ((window-live-p visible) (select-window visible))
-       ((window-live-p remembered)
-        (let ((other (etaf-pi--buffer-owner (window-buffer remembered))))
-          (when (and other (not (eq other buffer))) (etaf-pi--hide-client-panes other)))
-        (if (window-live-p remembered)
-            (progn (select-window remembered) (switch-to-buffer buffer))
-          (pop-to-buffer buffer)))
-       (t (pop-to-buffer buffer))))
-    (unless (buffer-local-value 'etaf-pi--state buffer)
-      (with-current-buffer buffer
-        (etaf-pi-mode)
-        (setq default-directory directory etaf-pi--state (etaf-pi-state-create)
-              etaf-pi--line-cache (make-hash-table :test #'eq)
-              etaf-pi--draft (etaf-ref "")
-              etaf-pi--actions (etaf-pi--make-actions buffer))
-        (setq-local truncate-lines t mode-line-format nil)
-        ;; The canvas owns every column it paints.  A sub-cell rounding
-        ;; remainder must not surface as Emacs's truncation glyph.
-        (setq-local buffer-display-table
-                    (let ((table (copy-sequence (or standard-display-table
-                                                    (make-display-table)))))
-                      (set-display-table-slot table 'truncation ?\s)
-                      table))
-        (setq-local scroll-margin 0 hscroll-margin 0)
-        (setq-local cursor-type nil)
-        (when (bound-and-true-p display-line-numbers-mode) (display-line-numbers-mode -1))
-        (setq-local emulation-mode-map-alists (cons 'etaf-pi--command-maps emulation-mode-map-alists))
-        (use-local-map etaf-pi-mode-map)
-        (add-hook 'kill-buffer-hook #'etaf-pi--dispose nil t)
-        (add-hook 'window-size-change-functions (lambda (_frame) (etaf-pi--schedule-paint)) nil t)
-        (face-remap-set-base 'default (list :background (etaf-pi-color :bg) :foreground (etaf-pi-color :ink)))
-        (etaf-pi--paint t)
-        (condition-case err
-            (progn
-              (setq etaf-pi--connection (etaf-pi-rpc-start directory (lambda (record) (etaf-pi--event buffer record)) etaf-pi-command))
-              (etaf-pi-refresh)
-              (etaf-pi--request "get_commands")
-              (etaf-pi--request "get_available_models")
-              (etaf-pi--request "get_available_thinking_levels"))
-          (error (setf (etaf-pi--state-phase etaf-pi--state) "启动失败"
-                        (etaf-pi--state-error etaf-pi--state) (error-message-string err))
-                 (etaf-pi--schedule-paint)))))
+         (existing (and (not new) (etaf-app-buffer name))))
+    (if (and existing (buffer-local-value 'etaf-pi--state existing))
+        (progn (etaf-pi--show existing) existing)
+      (etaf-pi--start (if (get-buffer name) (generate-new-buffer-name name) name)
+                      directory))))
+
+(defun etaf-pi--show (buffer)
+  "Display client BUFFER in its remembered window or the selected one.
+Another client leaving that window takes its navigation pane with it."
+  (let ((display-buffer-overriding-action '((display-buffer-same-window)))
+        (previous (etaf-pi--buffer-owner (window-buffer (selected-window))))
+        (visible (get-buffer-window buffer t))
+        (remembered (buffer-local-value 'etaf-pi--main-window buffer)))
+    (when (and previous (not (eq previous buffer))) (etaf-pi--hide-client-panes previous))
+    (cond
+     ((window-live-p visible) (select-window visible))
+     ((window-live-p remembered)
+      (let ((other (etaf-pi--buffer-owner (window-buffer remembered))))
+        (when (and other (not (eq other buffer))) (etaf-pi--hide-client-panes other)))
+      (if (window-live-p remembered)
+          (progn (select-window remembered) (switch-to-buffer buffer))
+        (pop-to-buffer buffer)))
+     (t (pop-to-buffer buffer)))
     (with-current-buffer buffer
-      (setq etaf-pi--main-window (get-buffer-window buffer t)))
+      (setq etaf-pi--main-window (get-buffer-window buffer t)))))
+
+(defun etaf-pi--start (name directory)
+  "Open a new client application NAME for DIRECTORY and start its backend."
+  (let ((buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (setq default-directory directory etaf-pi--state (etaf-pi-state-create)
+            etaf-pi--line-cache (make-hash-table :test #'eq)
+            etaf-pi--draft (etaf-ref "")
+            etaf-pi--palette (etaf-ref (etaf-pi--palette-mode))
+            etaf-pi--actions (etaf-pi--make-actions buffer)))
+    ;; The first view is laid out for the window the client shows in, so
+    ;; the client and its sidebar are displayed before it is built.  Later
+    ;; layouts mount again from `etaf-pi--paint'.
+    (etaf-pi--show buffer)
+    (with-current-buffer buffer (etaf-pi--ensure-navigation etaf-pi--actions))
+    (let ((palette (buffer-local-value 'etaf-pi--palette buffer)))
+      (etaf-app-open
+       name (etaf-pi--view buffer)
+       :state (buffer-local-value 'etaf-pi--state buffer)
+       :cursor nil :display nil
+       :background (lambda () (etaf-pi-color :bg (etaf-value palette)))
+       :foreground (lambda () (etaf-pi-color :ink (etaf-value palette)))
+       :on-fit #'etaf-pi--fit
+       :on-close #'etaf-pi--dispose
+       :mount-options (lambda (window)
+                        (and window (list :viewport-height (etaf-pi--height window))))))
+    (with-current-buffer buffer
+      (condition-case err
+          (progn
+            (setq etaf-pi--connection (etaf-pi-rpc-start directory (lambda (record) (etaf-pi--event buffer record)) etaf-pi-command))
+            (etaf-pi-refresh)
+            (etaf-pi--request "get_commands")
+            (etaf-pi--request "get_available_models")
+            (etaf-pi--request "get_available_thinking_levels"))
+        (error (setf (etaf-pi--state-phase etaf-pi--state) "启动失败"
+                     (etaf-pi--state-error etaf-pi--state) (error-message-string err))
+               (etaf-pi--schedule-paint))))
     buffer))
 (provide 'etaf-pi-app)
 ;;; etaf-pi-app.el ends here

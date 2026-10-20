@@ -1,8 +1,8 @@
 ;;; etaf-pi.el --- Native Pi client for ETAF -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ETAF contributors
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0"))
+;; Version: 0.1.1
+;; Package-Requires: ((emacs "29.1") (etaf "0.3.0") (etaf-ui "0.2.0"))
 ;; Keywords: tools, convenience
 ;; URL: https://github.com/emacs-taf/etaf-pi
 ;;; Commentary:

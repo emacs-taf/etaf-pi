@@ -125,15 +125,20 @@ transient pixel metrics are exempt from the published-canvas checks."
               (lambda (_) (plist-get (plist-get (etaf-pi-info) :composer) :active)) t)
              (etaf-pi-gui--action
               "send-multiline" (lambda (_)
-                                 (insert "检查一下这段对话的排版。\n保留代码示例，说明输入与工具的交互。")
+                                 ;; Typed keys reach the native session; Lisp
+                                 ;; insertion would bypass it.
+                                 (execute-kbd-macro
+                                  (vconcat "检查一下这段对话的排版。" (kbd "S-<return>")
+                                           "保留代码示例，说明输入与工具的交互。"))
                                  (execute-kbd-macro (kbd "C-c C-c")))
               (lambda (_)
                 (and (etaf-pi-gui--idle nil)
                      (equal (plist-get (plist-get (etaf-pi-info) :composer) :text) "")
-                     (string-match-p "工具 · read" (buffer-substring-no-properties (point-min) (point-max))))) t)
+                     (string-match-p "✔ read +完成" (buffer-substring-no-properties (point-min) (point-max))))) t)
              (etaf-pi-gui--action
               "draft-kept" (lambda (_)
-                             (execute-kbd-macro (kbd "i")) (insert "未发送的草稿")
+                             (execute-kbd-macro (kbd "i"))
+                             (execute-kbd-macro (string-to-vector "未发送的草稿"))
                              (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
                 (let ((composer (plist-get (etaf-pi-info) :composer)))
@@ -202,7 +207,8 @@ transient pixel metrics are exempt from the published-canvas checks."
              (etaf-pi-gui--action "follow-button" (lambda (_) (etaf-pi-gui--press 'pi-follow))
                                   (lambda (_) (plist-get (etaf-pi-info) :following)))
              (etaf-pi-gui--action
-              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i")) (insert "持续任务")
+              "start-interruptible-task" (lambda (_) (execute-kbd-macro (kbd "i"))
+                                          (execute-kbd-macro (string-to-vector "持续任务"))
                                           (execute-kbd-macro (kbd "RET")))
               (lambda (_)
                 (and (equal (plist-get (etaf-pi-info) :phase) "回复中")
